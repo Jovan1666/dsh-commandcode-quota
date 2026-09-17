@@ -140,6 +140,9 @@ const column = (id, dark, ) => `
     </div>
   </div>`
 
+/** `--with-snapshot` adds a column showing the state right after a restart. */
+const withSnapshot = process.argv.includes('--with-snapshot')
+
 const html = `<!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8">
@@ -166,15 +169,23 @@ const html = `<!doctype html>
   ${column('light', false)}
   ${column('lightopen', false)}
   ${column('dark', true)}
+  ${withSnapshot ? column('snapshot', false) : ''}
 </div>
 <script>
   window.__ModuleLoader__ = { load: (entry) => { window.__entry = entry } }
+  window.__withSnapshot = ${withSnapshot ? 'true' : 'false'}
 </script>
 <script src="../client.js"></script>
 <script src="file://${path.join(devdeps, 'react', 'umd', 'react.development.js').replaceAll('\\', '/')}"></script>
 <script src="file://${path.join(devdeps, 'react-dom', 'umd', 'react-dom.development.js').replaceAll('\\', '/')}"></script>
 <script>
   const REPORT = ${JSON.stringify(REPORT)}
+  // The last column shows what the host answers with immediately after a dsh
+  // restart: its own last good report, marked stale and carrying its age, while
+  // a live read runs behind it.
+  const reportFor = (id) => id === 'snapshot'
+    ? Object.assign({}, REPORT, { stale: true, staleAgeMs: 45000 })
+    : REPORT
   const fetched = () => Promise.resolve({ ok: true, value: REPORT })
   const React = window.React
 
@@ -200,11 +211,15 @@ const html = `<!doctype html>
     connection: { rpc: { call: () => fetched() } },
   })
 
-  for (const id of ['light', 'lightopen', 'dark']) {
+  const columns = ['light', 'lightopen', 'dark'].concat(window.__withSnapshot ? ['snapshot'] : [])
+  for (const id of columns) {
     const mount = document.querySelector('[data-mount="' + id + '"]')
     const wide = id !== 'light'
+    const face = Object.assign({}, contributed.options.inject(), {
+      fetchQuota: () => Promise.resolve({ ok: true, value: reportFor(id) }),
+    })
     ReactDOM.createRoot(mount).render(
-      React.createElement(contributed.component, Object.assign({ wide }, contributed.options.inject()))
+      React.createElement(contributed.component, Object.assign({ wide }, face))
     )
   }
 

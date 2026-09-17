@@ -42,6 +42,23 @@ const KEY_ENV_PATTERN = /command_?code/i;
 const COMMANDCODE_HOST_PATTERN = /(^|\/\/|\.)commandcode\.ai(\/|$)/i;
 
 /**
+ * Where the host half keeps its last good snapshot.
+ *
+ * A plugin-owned directory beside DSH's own data, following the `dsh-usage/`
+ * precedent, rather than a file dropped into the harness's managed `storages/`
+ * tree or the home root.
+ *
+ * @param {object} [options] same home anchors as {@link resolveApiKey}.
+ * @returns {string} absolute path of the snapshot file.
+ */
+export function quotaSnapshotPath(options = {}) {
+  const env = options.env ?? process.env;
+  const home = options.home ?? os.homedir();
+  const dshHome = options.dshHome ?? env.DSH_HOME ?? path.join(home, '.dsh');
+  return path.join(dshHome, 'dsh-commandcode-quota', 'last-report.json');
+}
+
+/**
  * 取一个 provider baseURL 的 origin。
  *
  * provider 的 baseURL 带路径（官方是 `https://api.commandcode.ai/provider/v1`），
@@ -459,21 +476,46 @@ export async function fetchQuotaReport(options = {}) {
     }
   };
 
-  const whoami = await get(`${apiBase}${ENDPOINTS.whoami}`);
-  const orgId = isRecord(whoami) && isRecord(whoami.org) ? stringOf(whoami.org.id) : undefined;
-  const subscriptionUrl =
-    orgId === undefined
-      ? `${apiBase}${ENDPOINTS.subscription}`
-      : `${apiBase}${ENDPOINTS.subscription}?orgId=${encodeURIComponent(orgId)}`;
+  /**
+   * A read that must not be counted as a failure: used for the org-scoped
+   * subscription retry, where the plain read already succeeded and its result
+   * is a valid fallback. Reporting a failure there would tell the user an
+   * endpoint is degraded when nothing they can see is missing.
+   */
+  const getQuiet = async (url) => {
+    try {
+      const { record } = await getJson(url, headers, timeoutMs, fetchImpl);
+      return record;
+    } catch {
+      return undefined;
+    }
+  };
 
-  const [usage, credits, subscription] = await Promise.all([
+  /**
+   * All four endpoints fire together.
+   *
+   * `whoami` only exists to learn an org id, and awaiting it first cost a whole
+   * round trip on the critical path — measured at ~590 ms against the live API,
+   * on a panel whose first paint waits for this call. Personal accounts never
+   * report an org at all, so the common case was paying a hop for nothing.
+   *
+   * Team accounts still need the org-scoped subscription read: when `whoami`
+   * does report one, the subscription is re-read with the id. That costs an
+   * extra hop for org accounts only, which is what they cost before.
+   */
+  const [whoami, usage, credits, subscriptionPlain] = await Promise.all([
+    get(`${apiBase}${ENDPOINTS.whoami}`),
     get(`${apiBase}${ENDPOINTS.usage}`),
     get(`${apiBase}${ENDPOINTS.credits}`),
-    get(subscriptionUrl),
+    get(`${apiBase}${ENDPOINTS.subscription}`),
   ]);
 
-  const requestCount = failures.length;
-  if (requestCount === 4) {
+  const orgId = isRecord(whoami) && isRecord(whoami.org) ? stringOf(whoami.org.id) : undefined;
+  const subscription = orgId === undefined
+    ? subscriptionPlain
+    : (await getQuiet(`${apiBase}${ENDPOINTS.subscription}?orgId=${encodeURIComponent(orgId)}`)) ?? subscriptionPlain;
+
+  if (failures.length === 4) {
     const codes = failedStatuses;
     if (codes.length === 4 && codes.every((status) => status === 401 || status === 403)) {
       throw new QuotaError('AUTH', 'API key 被拒绝（401）：key 是否已失效或被重置？', { failures });

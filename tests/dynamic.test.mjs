@@ -451,6 +451,66 @@ console.log('a reading that straddles a billing boundary')
   })
 }
 
+console.log('the read path itself')
+{
+  /** Canned payloads for this block; the sampler above is stateful, this is not. */
+  const payloadFor = (pathname, org = null) => {
+    if (pathname === '/alpha/whoami') return { user: { id: 'u-1', userName: 'Jovan1666' }, org }
+    if (pathname === '/alpha/usage/summary') return { totalCount: 10, successRate: 100, totalCredits: 10, periodBasis: 'billing-period' }
+    if (pathname === '/alpha/billing/credits') return { credits: { monthlyCredits: 60, purchasedCredits: 0, freeCredits: 0 }, windowLimits: { fiveHour: { used: 1, cap: 14, exceeded: false, resetAt: Date.now() + HOUR } } }
+    if (pathname === '/alpha/billing/subscriptions') return { data: { planId: 'individual-goat', status: 'active', currentPeriodStart: PERIOD_START, currentPeriodEnd: PERIOD_END } }
+    return undefined
+  }
+
+  await checkAsync('all four endpoints are requested together, not one after another', async () => {
+    // The first paint waits for this call, and whoami used to be awaited on its
+    // own — a measured ~590 ms of the critical path, spent only to learn an org
+    // id that personal accounts never report.
+    let inFlight = 0
+    let peak = 0
+    const urls = []
+    const fetchImpl = async (url) => {
+      urls.push(url)
+      inFlight += 1
+      peak = Math.max(peak, inFlight)
+      await new Promise((resolve) => { setTimeout(resolve, 5) })
+      inFlight -= 1
+      return Response.json(payloadFor(new URL(url).pathname))
+    }
+    const r = await fetchQuotaReport({ apiKey: 'k', fetchImpl, apiBase: 'https://api.commandcode.ai' })
+    assert.equal(urls.length, 4, 'exactly one request per endpoint')
+    assert.equal(peak, 4, `all four were open at once, peak was ${peak}`)
+    assert.equal(r.monthly.used, 10)
+    assert.deepEqual(r.failures, [])
+  })
+
+  await checkAsync('an org account still gets its org-scoped subscription', async () => {
+    const urls = []
+    const fetchImpl = async (url) => {
+      urls.push(url)
+      const { pathname, search } = new URL(url)
+      return Response.json(payloadFor(pathname, search === '' ? { id: 'org-7' } : null))
+    }
+    const r = await fetchQuotaReport({ apiKey: 'k', fetchImpl, apiBase: 'https://api.commandcode.ai' })
+    assert.equal(urls.filter((url) => url.includes('orgId=org-7')).length, 1, 'the scoped re-read happened once')
+    assert.equal(r.account.orgId, 'org-7')
+    assert.equal(r.plan.name, 'GOAT')
+  })
+
+  await checkAsync('a failed org re-read falls back to the unscoped one instead of losing the plan', async () => {
+    const fetchImpl = async (url) => {
+      const { pathname, search } = new URL(url)
+      if (search !== '') return new Response('nope', { status: 500 })
+      return Response.json(payloadFor(pathname, pathname === '/alpha/whoami' ? { id: 'org-7' } : null))
+    }
+    const r = await fetchQuotaReport({ apiKey: 'k', fetchImpl, apiBase: 'https://api.commandcode.ai' })
+    assert.equal(r.plan.name, 'GOAT', 'the plain read is a valid fallback')
+    // And the fallback must not be reported as a degraded endpoint: nothing the
+    // user can see is missing.
+    assert.deepEqual(r.failures, [])
+  })
+}
+
 console.log('an account with nothing configured')
 {
   await checkAsync('the absence marker is stable across repeated reads', async () => {

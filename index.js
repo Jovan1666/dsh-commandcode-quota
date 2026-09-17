@@ -19,7 +19,10 @@
  * @module dsh-cc-quota
  */
 
-import { fetchQuotaReport } from './quota.mjs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
+
+import { fetchQuotaReport, quotaSnapshotPath, resolveApiKey } from './quota.mjs'
 
 /** Plugin name shown in the Loader inventory. */
 export const name = 'commandcode-quota'
@@ -42,6 +45,22 @@ const ROUTE_PATH = `${CHANNEL}/${ENDPOINT}`
 const CACHE_MS = 15_000
 
 /**
+ * How old a snapshot on disk may be and still be worth showing.
+ *
+ * The panel's first paint waits for an upstream round trip — measured at ~1.3 s
+ * against the live API, of which the two slowest endpoints are each over a
+ * second — and a freshly started dsh has nothing cached. That is exactly the
+ * "the card takes a moment to appear" case. Serving the previous snapshot
+ * immediately, dimmed and labelled with its age, turns the wait into no wait;
+ * the fresh report lands about a second later and replaces it.
+ *
+ * Past this age the numbers stop being a useful stand-in (the 5-hour window
+ * alone rolls over several times a day), so the panel starts blank instead of
+ * guessing.
+ */
+const SNAPSHOT_MAX_MS = 6 * 3_600_000
+
+/**
  * Wrap one result in the `server-response` envelope the browser caller checks.
  * @param rpcId - the caller's correlation id, echoed back verbatim.
  * @param result - `{ ok: true, value }` or `{ ok: false, error }`.
@@ -49,6 +68,40 @@ const CACHE_MS = 15_000
  */
 function envelope(rpcId, result) {
   return Response.json({ type: 'server-response', rpcId, result })
+}
+
+/**
+ * Read the last good snapshot from disk.
+ *
+ * Best effort by design: a missing, unreadable or malformed file means there is
+ * nothing to show early — never an error the user has to look at.
+ *
+ * @param file - the snapshot path.
+ * @returns the parsed report, or undefined.
+ */
+function readSnapshot(file) {
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'))
+    return parsed !== null && typeof parsed === 'object' && typeof parsed.fetchedAt === 'string' ? parsed : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Persist the last good snapshot. Best effort: a read-only home directory must
+ * not break the panel; it only costs the next cold start its head start.
+ *
+ * @param file - the snapshot path.
+ * @param report - the report that was just fetched.
+ */
+function writeSnapshot(file, report) {
+  try {
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(file, JSON.stringify(report), 'utf8')
+  } catch {
+    // Ignored on purpose: see above.
+  }
 }
 
 /**
@@ -157,6 +210,35 @@ function formatReportText(report) {
 export function apply(ctx) {
   /** @type {{ at: number, report: unknown } | undefined} */
   let cache
+
+  /** Where the last good report is kept between process lifetimes. */
+  const snapshotFile = quotaSnapshotPath()
+  /**
+   * The snapshot read once at startup. Read lazily-adjacent to the first call
+   * rather than on every call: it exists for the first paint, and after that the
+   * in-process cache is what answers.
+   */
+  let snapshot = readSnapshot(snapshotFile)
+
+  /**
+   * Whether this machine still points at Command Code.
+   *
+   * The snapshot exists to make the card appear instantly, not to outlive the
+   * configuration it belongs to: somebody who just removed their Command Code
+   * provider must get the "not applicable here" answer (and so no card), not a
+   * six-hour-old reading from an account they no longer have wired up. The check
+   * is a couple of small file reads, and only runs on the cold path.
+   *
+   * @returns true when a credential still resolves.
+   */
+  const appliesHere = () => {
+    try {
+      resolveApiKey()
+      return true
+    } catch {
+      return false
+    }
+  }
   /**
    * The read currently in progress, if any.
    *
@@ -172,13 +254,21 @@ export function apply(ctx) {
   let inFlight
 
   /**
-   * Read once from upstream and cache the result.
+   * Read once from upstream, then cache and persist the result.
    * @returns the RPC result for this read; never throws.
    */
   const fetchOnce = async () => {
     try {
       const value = await fetchQuotaReport()
       cache = { at: Date.now(), report: value }
+      // Keep the last good report on disk — and in memory — so the next cold
+      // start (a dsh restart, a page reload after the host recycled) can paint
+      // instantly instead of waiting out another upstream round trip. Refreshing
+      // the in-memory copy matters too: otherwise the stale path would go on
+      // serving whatever was on disk at startup, which is older than the report
+      // already fetched.
+      snapshot = value
+      writeSnapshot(snapshotFile, value)
       return { ok: true, value }
     } catch (error) {
       const code = error !== null && typeof error === 'object' && 'code' in error ? String(error.code) : 'UNKNOWN'
@@ -202,17 +292,47 @@ export function apply(ctx) {
   }
 
   /**
-   * Serve the cached report, or fetch and cache a fresh one.
+   * Serve a report, preferring the cheapest source that can answer honestly.
+   *
+   * Order: the in-process cache (≤15 s old, no marker), then — only on a true
+   * cold start — the snapshot on disk, labelled `stale` and served *while* a
+   * refresh runs behind it, then a blocking upstream read.
+   *
+   * The snapshot is deliberately restricted to the case where nothing has been
+   * read successfully in this process yet. Serving it whenever the 15 s cache
+   * lapsed would mean answering every poll with a dimmed, ageing snapshot while
+   * a live read was already on its way — the panel would visibly grey out every
+   * few seconds for no gain, since the numbers it is already showing are just as
+   * old as the snapshot's. Once one live read has landed, waiting ~1.3 s for the
+   * next one is invisible to a user looking at a card that is already painted.
+   *
+   * @param options.allowStale - whether a snapshot may be served early. The
+   *   browser route says yes because its first paint is the whole point; the
+   *   `/quota` command says no, because somebody who typed a command wants a
+   *   current answer, not a labelled guess.
    * @returns the RPC result for this call.
    */
-  const report = async () => {
+  const report = async ({ allowStale = false } = {}) => {
     const now = Date.now()
     if (cache !== undefined && now - cache.at < CACHE_MS) {
       return { ok: true, value: cache.report }
     }
+
+    // Start (or join) the refresh either way: the snapshot must never become a
+    // reason to stop asking upstream.
     if (inFlight === undefined) {
       inFlight = fetchOnce().finally(() => { inFlight = undefined })
     }
+
+    if (allowStale && cache === undefined && appliesHere()) {
+      const age = now - Date.parse(snapshot?.fetchedAt ?? '')
+      if (snapshot !== undefined && Number.isFinite(age) && age >= 0 && age < SNAPSHOT_MAX_MS) {
+        // Forwarded whole, plus the two fields that make the fallback honest:
+        // that it is one, and how old it is.
+        return { ok: true, value: { ...snapshot, stale: true, staleAgeMs: age } }
+      }
+    }
+
     return inFlight
   }
 
@@ -242,7 +362,7 @@ export function apply(ctx) {
       return failure(rpcId, 'bad-request', `method ${JSON.stringify(message.method)} does not match endpoint ${JSON.stringify(ENDPOINT)}`, { issues: [] })
     }
 
-    return envelope(rpcId, await report())
+    return envelope(rpcId, await report({ allowStale: true }))
   }
 
   ctx.connection.fetch.register({

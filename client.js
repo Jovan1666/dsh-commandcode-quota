@@ -52,6 +52,15 @@ window.__ModuleLoader__.load({
     /** Poll cadence: relaxed normally, tight once any window is near its cap. */
     const SLOW_MS = 60_000
     const FAST_MS = 15_000
+    /**
+     * Cadence after the host answers with a snapshot instead of a live read.
+     *
+     * The host serves its last good report immediately on a cold start so the
+     * card can paint at once; a refresh is already running behind that answer.
+     * Waiting the usual minute for it would waste the one moment the user is
+     * actually looking at the card.
+     */
+    const REVALIDATE_MS = 3_000
     /** Used percentage at which a window counts as "hot" for polling purposes. */
     const HOT_PERCENT = 85
     /** Where to send someone who needs more credit. */
@@ -348,6 +357,12 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         const controller = new AbortController()
         let timer
+        // How many answers in a row have been snapshots. The first one earns a
+        // quick re-read — a live report is already on its way, and this is the
+        // moment the user is actually looking at the card. If they keep coming,
+        // the host is having trouble upstream and hammering it every few seconds
+        // would help nobody.
+        let staleStreak = 0
         const load = () => {
           const fail = (message) => {
             setState((previous) => ({ phase: 'error', message, report: previous.report, at: previous.at }))
@@ -371,7 +386,14 @@ window.__ModuleLoader__.load({
                   return
                 }
                 setState({ phase: 'ready', report: value, at: Date.now() })
-                timer = window.setTimeout(load, anyHot(value) ? FAST_MS : SLOW_MS)
+                const isSnapshot = value.stale === true
+                staleStreak = isSnapshot ? staleStreak + 1 : 0
+                timer = window.setTimeout(
+                  load,
+                  isSnapshot
+                    ? (staleStreak === 1 ? REVALIDATE_MS : SLOW_MS)
+                    : (anyHot(value) ? FAST_MS : SLOW_MS),
+                )
               },
               (error) => {
                 if (controller.signal.aborted) return
@@ -546,7 +568,13 @@ window.__ModuleLoader__.load({
 
       const report = state.report
       const rows = report === undefined ? [] : windowsOf(report)
-      const stale = state.phase === 'error' && report !== undefined
+      // Two ways to be showing something other than a live reading: an answer
+      // the host marked as its last snapshot, and a failed refresh after a good
+      // one. Both dim the numbers and say how old they are — never silently.
+      const stale = state.phase === 'error' ? report !== undefined : report?.stale === true
+      const staleAt = report?.stale === true && typeof report.staleAgeMs === 'number'
+        ? Date.now() - report.staleAgeMs
+        : state.at
       const planName = report?.plan?.name ?? 'Command Code'
 
       let body
@@ -581,7 +609,7 @@ window.__ModuleLoader__.load({
           h('span', { className: `ccq-chevron${open ? ' ccq-open' : ''}` }, '▾'),
         ),
         ...body,
-        stale ? h('div', { className: 'ccq-note' }, format(t('stale'), { age: ageOf(state.at) ?? '—' })) : null,
+        stale ? h('div', { className: 'ccq-note' }, format(t('stale'), { age: ageOf(staleAt) ?? '—' })) : null,
         open && report !== undefined ? h('div', { className: 'ccq-detail' }, ...detailRows(report, rows, t)) : null,
       )
     }
