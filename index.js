@@ -22,7 +22,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
-import { fetchQuotaReport, quotaSnapshotPath, resolveApiKey } from './quota.mjs'
+import { credentialFingerprint, fetchQuotaReport, quotaSnapshotPath } from './quota.mjs'
 
 /** Plugin name shown in the Loader inventory. */
 export const name = 'commandcode-quota'
@@ -73,16 +73,23 @@ function envelope(rpcId, result) {
 /**
  * Read the last good snapshot from disk.
  *
- * Best effort by design: a missing, unreadable or malformed file means there is
- * nothing to show early — never an error the user has to look at.
+ * The file wraps the report with the fingerprint of the credential it was taken
+ * with, so a snapshot cannot be served to a different account than the one it
+ * describes. A missing, unreadable, malformed or unrecognised-version file
+ * simply means there is nothing to show early — never an error the user sees.
  *
  * @param file - the snapshot path.
- * @returns the parsed report, or undefined.
+ * @returns `{ fingerprint, report }`, or undefined.
  */
 function readSnapshot(file) {
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8'))
-    return parsed !== null && typeof parsed === 'object' && typeof parsed.fetchedAt === 'string' ? parsed : undefined
+    if (parsed === null || typeof parsed !== 'object' || parsed.version !== 1) return undefined
+    const report = parsed.report
+    const fingerprint = parsed.fingerprint
+    if (typeof fingerprint !== 'string' || report === null || typeof report !== 'object') return undefined
+    if (typeof report.fetchedAt !== 'string') return undefined
+    return { fingerprint, report }
   } catch {
     return undefined
   }
@@ -94,11 +101,12 @@ function readSnapshot(file) {
  *
  * @param file - the snapshot path.
  * @param report - the report that was just fetched.
+ * @param fingerprint - the credential fingerprint it belongs to.
  */
-function writeSnapshot(file, report) {
+function writeSnapshot(file, report, fingerprint) {
   try {
     mkdirSync(path.dirname(file), { recursive: true })
-    writeFileSync(file, JSON.stringify(report), 'utf8')
+    writeFileSync(file, JSON.stringify({ version: 1, fingerprint, report }), 'utf8')
   } catch {
     // Ignored on purpose: see above.
   }
@@ -221,24 +229,20 @@ export function apply(ctx) {
   let snapshot = readSnapshot(snapshotFile)
 
   /**
-   * Whether this machine still points at Command Code.
+   * Whether this machine still points at Command Code, and with which key.
    *
    * The snapshot exists to make the card appear instantly, not to outlive the
-   * configuration it belongs to: somebody who just removed their Command Code
-   * provider must get the "not applicable here" answer (and so no card), not a
-   * six-hour-old reading from an account they no longer have wired up. The check
-   * is a couple of small file reads, and only runs on the cold path.
+   * configuration it belongs to. Somebody who just removed their Command Code
+   * provider must get the "not applicable here" answer (and so no card) rather
+   * than a reading from an account they no longer have wired up — and somebody
+   * who switched accounts must not see the previous account's numbers. The
+   * first question is a resolve-or-not check, the second is the fingerprint
+   * match against the snapshot. Both are a few small file reads plus a digest,
+   * and only run on the cold path.
    *
-   * @returns true when a credential still resolves.
+   * @returns the current credential fingerprint, or undefined when nothing resolves.
    */
-  const appliesHere = () => {
-    try {
-      resolveApiKey()
-      return true
-    } catch {
-      return false
-    }
-  }
+  const currentFingerprint = () => credentialFingerprint()
   /**
    * The read currently in progress, if any.
    *
@@ -267,8 +271,9 @@ export function apply(ctx) {
       // the in-memory copy matters too: otherwise the stale path would go on
       // serving whatever was on disk at startup, which is older than the report
       // already fetched.
-      snapshot = value
-      writeSnapshot(snapshotFile, value)
+      const fingerprint = currentFingerprint()
+      snapshot = fingerprint === undefined ? undefined : { fingerprint, report: value }
+      if (fingerprint !== undefined) writeSnapshot(snapshotFile, value, fingerprint)
       return { ok: true, value }
     } catch (error) {
       const code = error !== null && typeof error === 'object' && 'code' in error ? String(error.code) : 'UNKNOWN'
@@ -324,12 +329,16 @@ export function apply(ctx) {
       inFlight = fetchOnce().finally(() => { inFlight = undefined })
     }
 
-    if (allowStale && cache === undefined && appliesHere()) {
-      const age = now - Date.parse(snapshot?.fetchedAt ?? '')
-      if (snapshot !== undefined && Number.isFinite(age) && age >= 0 && age < SNAPSHOT_MAX_MS) {
+    if (allowStale && cache === undefined) {
+      const fingerprint = currentFingerprint()
+      // Only this account's own snapshot: see `currentFingerprint`.
+      const belongsHere = fingerprint !== undefined && snapshot !== undefined && snapshot.fingerprint === fingerprint
+      const age = Date.parse(snapshot?.report?.fetchedAt ?? '')
+      const ageMs = now - age
+      if (belongsHere && Number.isFinite(ageMs) && ageMs >= 0 && ageMs < SNAPSHOT_MAX_MS) {
         // Forwarded whole, plus the two fields that make the fallback honest:
         // that it is one, and how old it is.
-        return { ok: true, value: { ...snapshot, stale: true, staleAgeMs: age } }
+        return { ok: true, value: { ...snapshot.report, stale: true, staleAgeMs: ageMs } }
       }
     }
 

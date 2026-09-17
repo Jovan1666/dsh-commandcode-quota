@@ -511,6 +511,54 @@ console.log('the read path itself')
   })
 }
 
+console.log('failures a user will actually hit')
+{
+  const notFound = () => Promise.resolve(new Response('nope', { status: 404 }))
+
+  await checkAsync('a plan without API access is not reported as a network problem', async () => {
+    // All four endpoints answer 404 on a plan with no API access. Calling that a
+    // network failure sends the user looking for a connectivity problem that
+    // does not exist.
+    await assert.rejects(
+      fetchQuotaReport({ apiKey: 'k', fetchImpl: notFound, apiBase: 'https://api.commandcode.ai' }),
+      (error) => error.code === 'NOT_FOUND' && /API 权限/.test(error.message),
+    )
+  })
+
+  await checkAsync('a revoked key still reads as an authentication problem', async () => {
+    await assert.rejects(
+      fetchQuotaReport({
+        apiKey: 'k',
+        fetchImpl: () => Promise.resolve(new Response('nope', { status: 401 })),
+        apiBase: 'https://api.commandcode.ai',
+      }),
+      (error) => error.code === 'AUTH',
+    )
+  })
+
+  await checkAsync('an offline machine reads as a network problem', async () => {
+    await assert.rejects(
+      fetchQuotaReport({
+        apiKey: 'k',
+        fetchImpl: () => Promise.reject(new Error('ENOTFOUND')),
+        apiBase: 'https://api.commandcode.ai',
+      }),
+      (error) => error.code === 'NETWORK',
+    )
+  })
+
+  await checkAsync('one endpoint failing alone leaves a usable report and names it', async () => {
+    const { fetchImpl } = sampler([sample({ degraded: ['/alpha/billing/subscriptions'] })])
+    const r = await fetchQuotaReport({ apiKey: 'k', fetchImpl, apiBase: 'https://api.commandcode.ai' })
+    assert.equal(r.failures.length, 1)
+    assert.match(r.failures[0], /subscriptions/)
+    assert.equal(r.monthly.used, 40, 'the monthly figures are still there')
+    // The plan block is what went missing, which is why the card falls back to a
+    // generic title and drops the monthly reset chip rather than inventing either.
+    assert.equal(r.plan, undefined)
+  })
+}
+
 console.log('an account with nothing configured')
 {
   await checkAsync('the absence marker is stable across repeated reads', async () => {

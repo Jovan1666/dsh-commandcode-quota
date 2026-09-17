@@ -29,6 +29,11 @@ const check = (label, fn) => {
   passed += 1
   console.log(`  ok  ${label}`)
 }
+const checkAsync = async (label, fn) => {
+  await fn()
+  passed += 1
+  console.log(`  ok  ${label}`)
+}
 
 /** The used percentages, in document order. */
 const percentagesIn = (html) => [...html.matchAll(/class="ccq-pct"[^>]*>([^<]*)</g)].map((match) => match[1])
@@ -92,10 +97,13 @@ function loadBundle(reactImpl) {
     head: { appendChild: (element) => { styles.push(element) } },
   }
   let captured
+  const timers = []
   const fakeWindow = {
     __ModuleLoader__: { load: (entry) => { captured = entry } },
-    setInterval: () => 0,
-    clearInterval: () => {},
+    // The card schedules its next poll through `window.setTimeout`; recording the
+    // delays is how the polling policy itself becomes testable.
+    setTimeout: (_fn, delay) => { timers.push(delay); return timers.length },
+    clearTimeout: () => {},
   }
   // eslint-disable-next-line no-new-func -- evaluating the shipped browser artifact is the point.
   new Function('window', SOURCE)(fakeWindow)
@@ -104,7 +112,7 @@ function loadBundle(reactImpl) {
     assert.equal(name, 'react', `bundle requires only react, saw ${name}`)
     return reactImpl
   })
-  return { exports, styles }
+  return { exports, styles, timers }
 }
 
 /** React with the three hooks the card uses replaced by deterministic stubs. */
@@ -123,9 +131,30 @@ function stubbedReact(stateQueue) {
   })
 }
 
+/**
+ * React that runs the card's effect body for real.
+ *
+ * The polling cadence lives inside `useEffect`, so a stub that skips it cannot
+ * see the policy at all. Running the body lets the test observe which delay the
+ * card schedules for which report.
+ */
+function liveEffectReact(stateQueue) {
+  const base = stubbedReact(stateQueue)
+  return Object.assign({}, base, { useEffect: (fn) => { fn() } })
+}
+
+/** The delay the card schedules for its next poll, given one report. */
+async function pollDelayFor(report) {
+  const { seen, timers } = applyAgainst(liveEffectReact([false, { phase: 'ready', report }]), report)
+  renderToStaticMarkup(React.createElement(seen.component, { wide: true, ...seen.options.inject() }))
+  // Let the fetch promise chain settle so the card can schedule its timer.
+  await new Promise((resolve) => { setTimeout(resolve, 5) })
+  return timers.at(-1)
+}
+
 /** Register against a fake client context and hand back what the plugin contributed. */
-function applyAgainst(reactImpl) {
-  const { exports, styles } = loadBundle(reactImpl)
+function applyAgainst(reactImpl, report = GOAT) {
+  const { exports, styles, timers } = loadBundle(reactImpl)
   assert.equal(typeof exports.apply, 'function', 'exports apply')
   assert.deepEqual(exports.inject, ['slots', 'connection', 'locale'], 'declares its services')
   const seen = { dictionaries: {} }
@@ -151,10 +180,10 @@ function applyAgainst(reactImpl) {
         return () => {}
       },
     },
-    connection: { rpc: { call: (...args) => { seen.rpcCall = args; return Promise.resolve({ ok: true, value: GOAT }) } } },
+    connection: { rpc: { call: (...args) => { seen.rpcCall = args; return Promise.resolve({ ok: true, value: report }) } } },
   }
   exports.apply(ctx)
-  return { seen, styles }
+  return { seen, styles, timers }
 }
 
 /**
@@ -246,13 +275,13 @@ console.log('plan-agnostic rendering')
 {
   check('a Pro account renders its own caps', () => {
     const html = renderReady(PRO)
-    assert.match(html, /class="ccq-plan">Pro</)
+    assert.match(html, /class="ccq-plan"[^>]*>Pro</)
     assert.deepEqual(percentagesIn(html), ['6%', '10%', '13%'])
     assert.match(html, /\$1\.00 \/ \$16\.00/)
   })
   check('an account with no rolling windows renders no rows', () => {
     const html = renderReady(PROVIDER)
-    assert.match(html, /class="ccq-plan">Provider</)
+    assert.match(html, /class="ccq-plan"[^>]*>Provider</)
     assert.equal(labelsIn(html).length, 0)
     assert.match(html, /该套餐未上报额度窗口/)
   })
@@ -471,6 +500,88 @@ console.log('values that move')
   check('a plan that stops reporting a window simply drops the row', () => {
     const html = renderReady({ ...GOAT, weekly: undefined })
     assert.deepEqual(labelsIn(html), ['5 小时', '月度'])
+  })
+}
+
+console.log('what a user hits in practice')
+{
+  await checkAsync('a window that vanished because its endpoint failed is explained', async () => {
+    // Silence here is the worst outcome: the user sees a row disappear and
+    // blames their account. One muted line, and the endpoints named on the
+    // card's tooltip.
+    const html = renderReady({ ...GOAT, failures: ['/alpha/billing/credits: HTTP 500'] })
+    assert.match(html, /1 项数据这次没取到/)
+    assert.match(html, /title="[^"]*credits: HTTP 500/)
+  })
+
+  await checkAsync('a healthy read says nothing about degradation', async () => {
+    assert.doesNotMatch(renderReady(GOAT), /没取到/)
+  })
+
+  await checkAsync('the host’s diagnostic wall becomes one readable line', async () => {
+    const { seen } = applyAgainst(stubbedReact([false, {
+      phase: 'error',
+      message: '[NETWORK] 四个端点全部失败：\n  /alpha/whoami: fetch failed\n  /alpha/usage/summary: fetch failed',
+    }]))
+    const error = renderToStaticMarkup(React.createElement(seen.component, {
+      wide: true,
+      ...seen.options.inject(),
+    }))
+    // The visible line is the short one; the diagnostic text is only in the
+    // tooltip, where it does not wreck the layout.
+    const visible = /<div class="ccq-error"[^>]*>([^<]*)</.exec(error)?.[1]
+    assert.equal(visible, '连不上 Command Code')
+    assert.match(error, /title="\[NETWORK\][^"]*usage\/summary/)
+  })
+
+  check('a known code and an unknown one both render something', () => {
+    const { seen } = applyAgainst(stubbedReact([false, { phase: 'error', message: '[NOT_FOUND] nope' }]))
+    const html = renderToStaticMarkup(React.createElement(seen.component, { wide: true, ...seen.options.inject() }))
+    assert.match(html, /当前套餐不含 API 权限/)
+    const { seen: oddSeen } = applyAgainst(stubbedReact([false, { phase: 'error', message: 'something odd' }]))
+    const odd = renderToStaticMarkup(React.createElement(oddSeen.component, { wide: true, ...oddSeen.options.inject() }))
+    assert.match(odd, /something odd/, 'an unrecognised message is shown rather than swallowed')
+  })
+
+  check('the card is reachable and operable from the keyboard', () => {
+    const html = renderReady(GOAT)
+    assert.match(html, /role="button"/)
+    assert.match(html, /tabindex="0"/)
+    assert.match(html, /aria-expanded="false"/)
+    const opened = renderReady(GOAT, true)
+    assert.match(opened, /aria-expanded="true"/)
+  })
+
+  check('a long plan id cannot push the card’s layout apart', () => {
+    const { styles } = applyAgainst(React)
+    const plan = /\.ccq-plan\{[^}]*\}/.exec(styles[0].textContent)?.[0] ?? ''
+    assert.match(plan, /max-width:\d+px/)
+    assert.match(plan, /text-overflow:ellipsis/)
+    const html = renderReady({ ...GOAT, plan: { ...GOAT.plan, name: 'individual-enterprise-ultra-plus' } })
+    assert.match(html, /title="individual-enterprise-ultra-plus"/, 'the full name stays reachable')
+  })
+}
+
+console.log('polling cadence follows the state that matters')
+{
+  await checkAsync('a window approaching its cap polls fast', async () => {
+    assert.equal(await pollDelayFor(GOAT), 15_000, 'monthly at 98.1% is worth watching')
+  })
+
+  await checkAsync('a spent window stops polling fast', async () => {
+    // The real account sat at 99.84% for days. Under the old rule that meant a
+    // request every 15 seconds, forever, to learn nothing new.
+    const spent = { ...GOAT, monthly: { ...GOAT.monthly, used: 70.11, remaining: 0.11, cap: 70.22, percent: 99.84 } }
+    assert.equal(await pollDelayFor(spent), 60_000)
+  })
+
+  await checkAsync('a comfortable account polls on the relaxed cadence', async () => {
+    const calm = { ...GOAT, monthly: { ...GOAT.monthly, percent: 20 }, fiveHour: { ...GOAT.fiveHour, percent: 5 }, weekly: { ...GOAT.weekly, percent: 3 } }
+    assert.equal(await pollDelayFor(calm), 60_000)
+  })
+
+  await checkAsync('a snapshot is chased quickly, once', async () => {
+    assert.equal(await pollDelayFor({ ...GOAT, stale: true, staleAgeMs: 45_000 }), 3_000)
   })
 }
 

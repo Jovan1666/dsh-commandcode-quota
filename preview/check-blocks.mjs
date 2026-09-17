@@ -15,7 +15,7 @@ const root = path.dirname(here)
 /** Pull every fenced block out of a README. */
 function fencedBlocks(markdown) {
   const blocks = []
-  const pattern = /```[a-z]*\n([\s\S]*?)```/g
+  const pattern = /```[a-z]*\r?\n([\s\S]*?)```/g
   let match
   while ((match = pattern.exec(markdown)) !== null) blocks.push(match[1].replace(/\n$/, ''))
   return blocks
@@ -23,6 +23,15 @@ function fencedBlocks(markdown) {
 
 const readme = readFileSync(path.join(root, 'README.md'), 'utf8')
 const blocks = fencedBlocks(readme).filter((block) => /[─█░]/.test(block))
+
+// A checker that finds nothing to check must not report success: on a CRLF
+// checkout the fence pattern used to match zero blocks and say so quietly, which
+// reads exactly like a pass. (It also has to tolerate CRLF, since that is what a
+// Windows checkout produces.)
+if (blocks.length === 0) {
+  console.error('check-blocks: found no box-drawing sample in README.md — nothing was checked.')
+  process.exit(1)
+}
 
 const html = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>code block check</title>

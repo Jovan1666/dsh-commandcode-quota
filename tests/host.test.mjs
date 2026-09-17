@@ -16,6 +16,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
+const { credentialFingerprint } = await import(`../quota.mjs?t=${String(Date.now())}`)
 
 // Isolate credential discovery from the machine running the test. Pointing both
 // home anchors at an empty directory means no settings.yaml and no credential
@@ -403,13 +404,19 @@ console.log('cold start with a snapshot on disk')
     totals: { requests: 17_000, successRate: 100 },
     failures: [],
   }
+  const plugin = await loadHostHalf()
+  // The snapshot is keyed to the credential it was taken with, so the test has
+  // to write it the way the host does: with the fingerprint of the key in play.
   const writeSnapshot = (report) => {
     mkdirSync(path.dirname(snapshotFile), { recursive: true })
-    writeFileSync(snapshotFile, JSON.stringify(report), 'utf8')
+    writeFileSync(snapshotFile, JSON.stringify({
+      version: 1,
+      fingerprint: credentialFingerprint(),
+      report,
+    }), 'utf8')
   }
   writeSnapshot(previous)
 
-  const plugin = await loadHostHalf()
   const calls = stubFetch()
   const { ctx, seen } = makeCtx()
   plugin.apply(ctx)
@@ -435,8 +442,9 @@ console.log('cold start with a snapshot on disk')
 
   check('the fresh report is what gets persisted for the next cold start', () => {
     const persisted = JSON.parse(readFileSync(snapshotFile, 'utf8'))
-    assert.equal(persisted.monthly.used, 67.68)
-    assert.ok(Date.parse(persisted.fetchedAt) > Date.parse(previous.fetchedAt))
+    assert.equal(persisted.version, 1)
+    assert.equal(persisted.report.monthly.used, 67.68)
+    assert.ok(Date.parse(persisted.report.fetchedAt) > Date.parse(previous.fetchedAt))
   })
 
   const commandOutcome = await seen.command.handler({ rawInput: '' })
@@ -462,10 +470,13 @@ console.log('a snapshot too old to stand in for the present')
     totals: { requests: 100, successRate: 100 },
     failures: [],
   }
-  mkdirSync(path.dirname(snapshotFile), { recursive: true })
-  writeFileSync(snapshotFile, JSON.stringify(ancient), 'utf8')
-
   const plugin = await loadHostHalf()
+  mkdirSync(path.dirname(snapshotFile), { recursive: true })
+  writeFileSync(snapshotFile, JSON.stringify({
+    version: 1,
+    fingerprint: credentialFingerprint(),
+    report: ancient,
+  }), 'utf8')
   stubFetch()
   const { ctx, seen } = makeCtx()
   plugin.apply(ctx)
@@ -508,6 +519,61 @@ console.log('a snapshot that outlives its configuration')
     assert.equal(result.value.configured, false, 'no card for a host that no longer uses Command Code')
     assert.equal(result.value.stale, undefined)
     assert.equal(result.value.monthly, undefined)
+  })
+}
+
+console.log('a snapshot belonging to a different account')
+{
+  // The same `refs.NAME` can hold a different key tomorrow: switch plans, paste a
+  // new key, or run a second dsh against another account, and a snapshot taken
+  // with the old key would describe an account this machine no longer uses.
+  const home = isolatedHome()
+  const snapshotFile = path.join(home, 'dsh-commandcode-quota', 'last-report.json')
+  mkdirSync(path.dirname(snapshotFile), { recursive: true })
+  writeFileSync(snapshotFile, JSON.stringify({
+    version: 1,
+    // A fingerprint that cannot match the test key, standing in for "another key".
+    fingerprint: 'ffffffffffffffff',
+    report: {
+      fetchedAt: new Date().toISOString(),
+      plan: { planId: 'individual-max', name: 'Max', status: 'active', currentPeriodEnd: '2026-09-25T09:08:33.000Z' },
+      monthly: { used: 5, remaining: 145, cap: 150, percent: 3.3 },
+      fiveHour: { used: 1, cap: 30, percent: 3.3, exceeded: false, resetAt: Date.now() + 3_600_000 },
+      weekly: { used: 2, cap: 80, percent: 2.5, exceeded: false, resetAt: Date.now() + 86_400_000 },
+      totals: { requests: 1, successRate: 100 },
+      failures: [],
+    },
+  }), 'utf8')
+
+  const plugin = await loadHostHalf()
+  stubFetch()
+  const { ctx, seen } = makeCtx()
+  plugin.apply(ctx)
+
+  const result = await callRoute(seen.route, 'cc-quota/report', {})
+  check('another account’s snapshot is ignored, not shown', () => {
+    assert.equal(result.value.stale, undefined, 'no snapshot answer')
+    assert.equal(result.value.plan.name, 'GOAT', 'this account’s own live read')
+    assert.equal(result.value.monthly.used, 67.68)
+  })
+}
+
+console.log('the snapshot file carries its account fingerprint')
+{
+  const home = isolatedHome()
+  const plugin = await loadHostHalf()
+  stubFetch()
+  const { ctx, seen } = makeCtx()
+  plugin.apply(ctx)
+
+  await callRoute(seen.route, 'cc-quota/report', {})
+  const written = JSON.parse(readFileSync(path.join(home, 'dsh-commandcode-quota', 'last-report.json'), 'utf8'))
+  check('what lands on disk is versioned and fingerprinted, never the bare key', () => {
+    assert.equal(written.version, 1)
+    assert.equal(typeof written.fingerprint, 'string')
+    assert.equal(written.fingerprint.length, 16)
+    assert.equal(written.report.monthly.used, 67.68)
+    assert.equal(JSON.stringify(written).includes('user_test_key'), false, 'the key itself is never written')
   })
 }
 
