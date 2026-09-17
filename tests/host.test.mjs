@@ -115,7 +115,7 @@ console.log('host half contract')
 {
   const plugin = await loadHostHalf()
   check('exports a cordis function-plugin face', () => {
-    assert.equal(plugin.name, 'cc-quota')
+    assert.equal(plugin.name, 'commandcode-quota')
     assert.deepEqual(plugin.inject, ['connection'])
     assert.equal(typeof plugin.apply, 'function')
   })
