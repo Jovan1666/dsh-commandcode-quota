@@ -21,7 +21,7 @@
 import { fetchQuotaReport } from './quota.mjs'
 
 /** Plugin name shown in the Loader inventory. */
-export const name = 'cc-quota'
+export const name = 'commandcode-quota'
 
 /** The exact Fetch registry lives on the host Connection service. */
 export const inject = ['connection']
