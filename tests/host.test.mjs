@@ -10,7 +10,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -69,6 +69,23 @@ function stubFetch() {
 function loadHostHalf() {
   process.env.COMMANDCODE_API_KEY = 'user_test_key'
   return import(`../index.js?t=${String(Date.now())}-${String(Math.random())}`)
+}
+
+/**
+ * Point this process at a fresh DSH home and return it.
+ *
+ * Blocks share one process, so anything a block persists — the last-report
+ * snapshot in particular — would otherwise leak into the next block and change
+ * which code path it exercises. Each block that reads the route for its own
+ * reasons gets its own home.
+ *
+ * @returns the isolated home directory.
+ */
+function isolatedHome() {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'cc-quota-home-'))
+  process.env.DSH_HOME = dir
+  process.env.USERPROFILE = dir
+  return dir
 }
 
 /** The path the plugin registers; also the URL the browser posts to. */
@@ -203,6 +220,7 @@ console.log('host half contract')
 
 console.log('/quota slash command')
 {
+  isolatedHome()
   const plugin = await loadHostHalf()
   stubFetch()
   const { ctx, seen } = makeCtx()
@@ -235,6 +253,7 @@ console.log('/quota slash command')
 
 console.log('/quota on a profile without a command runtime')
 {
+  isolatedHome()
   const plugin = await loadHostHalf()
   stubFetch()
   const { ctx, seen } = makeCtx({ withCommands: false })
@@ -248,6 +267,7 @@ console.log('/quota on a profile without a command runtime')
 
 console.log('/quota when no Command Code provider is configured')
 {
+  isolatedHome()
   const plugin = await loadHostHalf()
   delete process.env.COMMANDCODE_API_KEY
   delete process.env.COMMAND_CODE_API_KEY
@@ -264,6 +284,7 @@ console.log('/quota when no Command Code provider is configured')
 
 console.log('freshness while the account keeps burning credit')
 {
+  isolatedHome()
   const plugin = await loadHostHalf()
   const calls = []
   const state = { used: 67.68, requests: 17_641 }
@@ -320,6 +341,7 @@ console.log('freshness while the account keeps burning credit')
 
 console.log('concurrent readers')
 {
+  isolatedHome()
   // Two callers wanting a report at the same instant — the card polling and a
   // /quota invocation, say. They must share one snapshot: a slow first read
   // finishing after a fast second one would otherwise cache the older numbers
@@ -358,8 +380,140 @@ console.log('concurrent readers')
   })
 }
 
+console.log('cold start with a snapshot on disk')
+{
+  const home = isolatedHome()
+  // The case that made the card feel slow: a restarted dsh has no cache, and the
+  // panel's first paint otherwise waits out a full upstream round trip.
+  const snapshotFile = path.join(home, 'dsh-commandcode-quota', 'last-report.json')
+  const previous = {
+    fetchedAt: new Date(Date.now() - 45_000).toISOString(),
+    apiBase: 'https://api.commandcode.ai',
+    credentialSource: 'test',
+    plan: {
+      planId: 'individual-goat',
+      name: 'GOAT',
+      status: 'active',
+      currentPeriodStart: '2026-08-25T09:08:33.000Z',
+      currentPeriodEnd: '2026-09-25T09:08:33.000Z',
+    },
+    monthly: { used: 66.1, remaining: 4.1, cap: 70.2, percent: 94.2, capSuspect: false },
+    fiveHour: { used: 1, cap: 14, percent: 7.1, exceeded: false, resetAt: Date.now() + 3_600_000 },
+    weekly: { used: 2, cap: 35, percent: 5.7, exceeded: false, resetAt: Date.now() + 86_400_000 },
+    totals: { requests: 17_000, successRate: 100 },
+    failures: [],
+  }
+  const writeSnapshot = (report) => {
+    mkdirSync(path.dirname(snapshotFile), { recursive: true })
+    writeFileSync(snapshotFile, JSON.stringify(report), 'utf8')
+  }
+  writeSnapshot(previous)
+
+  const plugin = await loadHostHalf()
+  const calls = stubFetch()
+  const { ctx, seen } = makeCtx()
+  plugin.apply(ctx)
+
+  const started = Date.now()
+  const first = await callRoute(seen.route, 'cc-quota/report', {})
+  const elapsed = Date.now() - started
+  check('the first answer is the snapshot, without waiting for upstream', () => {
+    assert.equal(first.ok, true)
+    assert.equal(first.value.stale, true, 'marked as a snapshot rather than a live read')
+    assert.ok(first.value.staleAgeMs >= 44_000 && first.value.staleAgeMs < 120_000, `age was ${first.value.staleAgeMs}`)
+    assert.equal(first.value.monthly.used, 66.1, 'and it carries the snapshot numbers')
+    assert.ok(elapsed < 250, `answered in ${elapsed}ms — the whole point is not waiting`)
+  })
+
+  await new Promise((resolve) => { setTimeout(resolve, 30) })
+  const second = await callRoute(seen.route, 'cc-quota/report', {})
+  check('a live read was already running behind it, and lands next', () => {
+    assert.equal(second.value.stale, undefined, 'a live answer carries no stale marker')
+    assert.equal(second.value.monthly.used, 67.68, 'the honest, current number')
+    assert.equal(calls.length, 4, 'the snapshot answered without spending an upstream request of its own')
+  })
+
+  check('the fresh report is what gets persisted for the next cold start', () => {
+    const persisted = JSON.parse(readFileSync(snapshotFile, 'utf8'))
+    assert.equal(persisted.monthly.used, 67.68)
+    assert.ok(Date.parse(persisted.fetchedAt) > Date.parse(previous.fetchedAt))
+  })
+
+  const commandOutcome = await seen.command.handler({ rawInput: '' })
+  check('the /quota command never answers from a snapshot', () => {
+    // Somebody who typed a command wants the current answer, not a labelled
+    // guess: the command path takes the blocking read.
+    assert.match(commandOutcome.text, /\$67\.68/, 'the live figure')
+    assert.doesNotMatch(commandOutcome.text, /\$66\.10/)
+  })
+}
+
+console.log('a snapshot too old to stand in for the present')
+{
+  const home = isolatedHome()
+  isolatedHome()
+  const snapshotFile = path.join(home, 'dsh-commandcode-quota', 'last-report.json')
+  const ancient = {
+    fetchedAt: new Date(Date.now() - 7 * 3_600_000).toISOString(),
+    plan: { planId: 'individual-goat', name: 'GOAT', status: 'active', currentPeriodEnd: '2026-09-25T09:08:33.000Z' },
+    monthly: { used: 10, remaining: 60, cap: 70, percent: 14.3 },
+    fiveHour: { used: 0.5, cap: 14, percent: 3.6, exceeded: false, resetAt: Date.now() + 3_600_000 },
+    weekly: { used: 1, cap: 35, percent: 2.9, exceeded: false, resetAt: Date.now() + 86_400_000 },
+    totals: { requests: 100, successRate: 100 },
+    failures: [],
+  }
+  mkdirSync(path.dirname(snapshotFile), { recursive: true })
+  writeFileSync(snapshotFile, JSON.stringify(ancient), 'utf8')
+
+  const plugin = await loadHostHalf()
+  stubFetch()
+  const { ctx, seen } = makeCtx()
+  plugin.apply(ctx)
+
+  const result = await callRoute(seen.route, 'cc-quota/report', {})
+  check('a seven-hour-old snapshot is discarded, and a real read happens instead', () => {
+    assert.equal(result.value.stale, undefined)
+    assert.equal(result.value.monthly.used, 67.68)
+  })
+}
+
+console.log('a snapshot that outlives its configuration')
+{
+  // The snapshot exists to make the card appear instantly, not to outlive the
+  // setup it belongs to. Somebody who just removed their Command Code provider
+  // must get "not applicable here" — and so no card — rather than a reading from
+  // an account they no longer have wired up.
+  const home = isolatedHome()
+  const snapshotFile = path.join(home, 'dsh-commandcode-quota', 'last-report.json')
+  mkdirSync(path.dirname(snapshotFile), { recursive: true })
+  writeFileSync(snapshotFile, JSON.stringify({
+    fetchedAt: new Date().toISOString(),
+    plan: { planId: 'individual-goat', name: 'GOAT', status: 'active', currentPeriodEnd: '2026-09-25T09:08:33.000Z' },
+    monthly: { used: 68, remaining: 2, cap: 70, percent: 97.1 },
+    totals: { requests: 1, successRate: 100 },
+    failures: [],
+  }), 'utf8')
+
+  const plugin = await loadHostHalf()
+  delete process.env.COMMANDCODE_API_KEY
+  delete process.env.COMMAND_CODE_API_KEY
+  delete process.env.CMD_API_KEY
+  stubFetch()
+  const { ctx, seen } = makeCtx()
+  plugin.apply(ctx)
+
+  const result = await callRoute(seen.route, 'cc-quota/report', {})
+  check('the absence marker wins over a snapshot from a removed provider', () => {
+    assert.equal(result.ok, true)
+    assert.equal(result.value.configured, false, 'no card for a host that no longer uses Command Code')
+    assert.equal(result.value.stale, undefined)
+    assert.equal(result.value.monthly, undefined)
+  })
+}
+
 console.log('upstream failure')
 {
+  isolatedHome()
   const plugin = await loadHostHalf()
   globalThis.fetch = () => Promise.reject(new Error('ECONNREFUSED'))
   const { ctx, seen } = makeCtx()
@@ -376,6 +530,7 @@ console.log('upstream failure')
 
 console.log('no Command Code on this host')
 {
+  isolatedHome()
   const plugin = await loadHostHalf()
   delete process.env.COMMANDCODE_API_KEY
   delete process.env.COMMAND_CODE_API_KEY
@@ -395,8 +550,9 @@ console.log('no Command Code on this host')
 
 console.log('Command Code configured but the key resolves to nothing')
 {
+  const home = isolatedHome()
   // A discovered route makes the plugin applicable, so the failure must show.
-  const settingsPath = path.join(ISOLATED_HOME, 'settings.yaml')
+  const settingsPath = path.join(home, 'settings.yaml')
   writeFileSync(
     settingsPath,
     'llm-pi-ai:\n  providers:\n    cc:\n      apiKeyEnv: NOT_SET_ANYWHERE\n      baseURL: https://api.commandcode.ai/provider/v1\n',
@@ -416,7 +572,7 @@ console.log('Command Code configured but the key resolves to nothing')
     assert.equal(result.ok, false)
     assert.match(result.error.message, /\[MISSING_CREDENTIAL\]/)
   })
-  rmSync(settingsPath, { force: true })
+  // The home is a throwaway directory; no cleanup needed.
 }
 
 console.log(`\n${passed} checks passed`)

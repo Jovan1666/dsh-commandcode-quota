@@ -447,6 +447,27 @@ console.log('values that move')
     assert.doesNotMatch(html, /本次读数跨了计费周期/)
   })
 
+  check('a host snapshot paints at once, dimmed, with its age', () => {
+    // What the card shows in the first moments after a dsh restart: the host
+    // answers with its last good read while a fresh one is on its way. The
+    // numbers are real but no longer current, so they say so.
+    const html = renderReady({ ...GOAT, stale: true, staleAgeMs: 45_000 })
+    assert.match(html, /ccq-stale/)
+    assert.deepEqual(percentagesIn(html), ['16%', '7%', '98%'])
+    assert.match(html, /上次成功：45m?前|<1m前|0m前|\d+m前/)
+  })
+
+  check('a live report is never dimmed', () => {
+    assert.doesNotMatch(renderReady(GOAT), /ccq-stale/)
+  })
+
+  check('a snapshot that keeps coming does not count down faster', () => {
+    // Both the snapshot answer and a failed refresh mean "the numbers on screen
+    // are not live"; neither may crash on a missing age.
+    const noAge = renderReady({ ...GOAT, stale: true })
+    assert.match(noAge, /ccq-stale/)
+  })
+
   check('a plan that stops reporting a window simply drops the row', () => {
     const html = renderReady({ ...GOAT, weekly: undefined })
     assert.deepEqual(labelsIn(html), ['5 小时', '月度'])

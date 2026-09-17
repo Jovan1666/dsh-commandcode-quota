@@ -45,6 +45,19 @@ The sidebar is roughly 200 px of content width, and a laptop screen makes small 
 - **No pace verdict, no burn-rate forecast.** "Over pace" cannot be acted on by someone who has work to do, and a projected exhaustion date assumes a constant burn rate that credit usage never has. The host still exposes `projection` in its JSON for the CLI and for scripts.
 - **One click, not ten lines.** The expanded body is the monthly used/remaining pair plus the period totals — five short lines in total.
 
+### Why the card is there before you look
+
+The panel's first paint used to wait out a full upstream round trip, and a restarted dsh has nothing cached — which is the "it takes a moment to show up" case. Measured against the live API with `preview/latency.mjs`:
+
+| | |
+|---|---|
+| First answer after a restart, snapshot on disk | **~2 ms** |
+| First answer after a restart, no snapshot yet | ~1.4 s |
+| The four endpoints requested in sequence | ~2.3 s |
+| The four endpoints requested together | ~1.2 s |
+
+So the host does two things. It fires all four endpoints at once (`whoami` used to be awaited on its own, ~590 ms of pure waiting for an org id that personal accounts never report), and it keeps its last good report on disk. On a cold start the route answers with that snapshot immediately — dimmed and labelled with its age, with a live read already running behind it — and the card replaces it a second later. The browser asks again 3 s after a snapshot instead of waiting out the normal minute, so the numbers are live by the time you have read them.
+
 ### Reading the numbers
 
 Percentages are computed from the live API as `used ÷ (used + remaining)`, and `preview/e2e-live.mjs` asserts that identity against a real account on demand. The row headline is rounded to a **whole percent** — the same rounding the Command Code dashboard uses — so the card and the website never disagree at a glance. The exact one-decimal value and the dollar amounts sit one hover (or one click) away.
@@ -194,7 +207,8 @@ Error codes (exit code 2): `MISSING_CREDENTIAL`, `AUTH`, `NOT_FOUND` (usually a 
 
 - Your API key stays on the host. The browser never receives it; it only receives the normalized report over the same-origin `/api` transport, which is additionally fenced to loopback and requires this process's browser-session cookie.
 - The plugin talks only to your Command Code account's API. There is no telemetry, no analytics, and no third-party endpoint.
-- Nothing is persisted: every refresh is a live read of four read-only endpoints.
+- The only local file written is the last-report snapshot: `$DSH_HOME/dsh-commandcode-quota/last-report.json`. It holds the same figures the card shows (credit totals and window usage — never the API key) and exists so the card can paint immediately after a restart. Delete it at any time; the plugin recreates it. It is also what makes the card appear at once, so it is not writing anything you did not already see on screen.
+- Apart from that snapshot, every refresh is a live read of four read-only endpoints.
 - The only local files read are the credential and settings files named in [Credentials](#credentials).
 
 ## How it works
@@ -233,15 +247,15 @@ mkdir .devdeps && cd .devdeps
 npm init -y && npm install react@18 react-dom@18
 cd ..
 
-# 2. Everything at once — 98 checks, one verdict, no network, no real credentials.
+# 2. Everything at once — 110 checks, one verdict, no network, no real credentials.
 node scripts/verify.mjs          # add --live to also hit a real account
 node scripts/verify.mjs --quiet  # one summary line per suite
 
 #    ...which runs, individually:
 #    tests/quota.test.mjs     15  route discovery, credential order, plan table
-#    tests/host.test.mjs      20  route registration, cache freshness, concurrency, envelope guards, /quota
-#    tests/client.test.mjs    40  slot registration, layout rules, render states, moving values
-#    tests/dynamic.test.mjs   23  invariants while the account moves: drift, resets, straddled reads, bad payloads
+#    tests/host.test.mjs      26  route registration, cache freshness, concurrency, snapshots, envelope guards, /quota
+#    tests/client.test.mjs    43  slot registration, layout rules, render states, moving values, stale snapshots
+#    tests/dynamic.test.mjs   26  invariants while the account moves: drift, resets, straddled reads, read-path shape
 
 # 3. Optional: verify nothing credential-shaped or machine-specific is staged.
 node scripts/audit.mjs
@@ -252,6 +266,9 @@ node scripts/audit.mjs
 The offline suites use synthetic sequences. Two scripts check the real thing:
 
 ```sh
+# Where does the first paint's time actually go? Endpoints and cold start.
+node preview/latency.mjs
+
 # One-shot: prints the /quota text and asserts used + remaining = cap.
 node preview/e2e-live.mjs
 
