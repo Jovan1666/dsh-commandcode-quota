@@ -10,7 +10,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -74,9 +74,13 @@ function loadHostHalf() {
 /** The path the plugin registers; also the URL the browser posts to. */
 const ROUTE_URL = 'http://dsh.internal/api/cc-quota/report'
 
-/** A fake host context that captures the exact Fetch route registration. */
-function makeCtx() {
-  const seen = {}
+/**
+ * A fake host context that captures the exact Fetch route registration and,
+ * when a command runtime is composed, the `/quota` definition.
+ * @param options.withCommands - false simulates a profile without a command runtime.
+ */
+function makeCtx({ withCommands = true } = {}) {
+  const seen = { effects: [] }
   const ctx = {
     connection: {
       fetch: {
@@ -86,6 +90,24 @@ function makeCtx() {
       },
     },
     logger: { info: () => {} },
+    // Effects run inline, like the client test does; their disposers are kept
+    // so a check can assert the command unregisters with the plugin.
+    effect: (callback) => {
+      const dispose = callback()
+      if (typeof dispose === 'function') seen.effects.push(dispose)
+    },
+  }
+  if (withCommands) {
+    ctx.get = (serviceName) => (serviceName === 'commands' ? {
+      register: (definition) => {
+        seen.command = definition
+        return () => {}
+      },
+    } : undefined)
+  } else {
+    // A profile may compose no command runtime at all: the reflection layer is
+    // always there, but the name resolves to nothing.
+    ctx.get = () => undefined
   }
   return { ctx, seen }
 }
@@ -153,7 +175,9 @@ console.log('host half contract')
   const unknown = await callRoute(seen.route, 'nope', {})
   check('a mismatched method is a bad-request RPC error', () => {
     assert.equal(unknown.ok, false)
-    assert.equal(unknown.error.code, 'gateway/bad-request')
+    // Must be a code the transport's discriminated-union error schema accepts,
+    // or the browser's response validation fails before it can read the error.
+    assert.equal(unknown.error.code, 'bad-request')
     assert.match(unknown.error.message, /does not match endpoint/)
     assert.deepEqual(unknown.error.details.issues, [])
   })
@@ -177,6 +201,65 @@ console.log('host half contract')
   })
 }
 
+console.log('/quota slash command')
+{
+  const plugin = await loadHostHalf()
+  stubFetch()
+  const { ctx, seen } = makeCtx()
+  plugin.apply(ctx)
+
+  check('registers an optional /quota command when a command runtime exists', () => {
+    assert.equal(seen.command.name, 'quota')
+    assert.match(seen.command.description, /Command Code/)
+    assert.equal(typeof seen.command.handler, 'function')
+  })
+
+  const outcome = await seen.command.handler({ rawInput: '' })
+  check('the command answers from the same cached report the card reads', async () => {
+    assert.equal(outcome.kind, 'success')
+    assert.match(outcome.text, /^Command Code · GOAT \(active\)\n/)
+    // percent is one-decimal precise in chat output; amounts come from the fixture
+    assert.match(outcome.text, /Monthly 96\.6% used · \$67\.68 \/ \$70\.08 · resets in \d+d\d+h/)
+    assert.match(outcome.text, /5-hour 15\.6% used · \$2\.18 \/ \$14\.00 · resets in /)
+    assert.match(outcome.text, /Weekly 6\.6% used · \$2\.31 \/ \$35\.00 · resets in /)
+    assert.match(outcome.text, /17,641 requests · 100% success · in .+ \/ out .+/)
+  })
+
+  const dispose = seen.effects.at(-1)
+  check('the command registration disposes with the plugin', () => {
+    assert.equal(typeof dispose, 'function')
+  })
+}
+
+console.log('/quota on a profile without a command runtime')
+{
+  const plugin = await loadHostHalf()
+  stubFetch()
+  const { ctx, seen } = makeCtx({ withCommands: false })
+  plugin.apply(ctx)
+
+  check('the card route still registers and nothing throws', () => {
+    assert.equal(seen.route.path, '/api/cc-quota/report')
+    assert.equal(seen.command, undefined)
+  })
+}
+
+console.log('/quota when no Command Code provider is configured')
+{
+  const plugin = await loadHostHalf()
+  delete process.env.COMMANDCODE_API_KEY
+  delete process.env.COMMAND_CODE_API_KEY
+  delete process.env.CMD_API_KEY
+  const { ctx, seen } = makeCtx()
+  plugin.apply(ctx)
+
+  const outcome = await seen.command.handler({ rawInput: '' })
+  check('absence is a readable error, not a crash or an empty card', () => {
+    assert.equal(outcome.kind, 'error')
+    assert.match(outcome.text, /No Command Code provider is configured/)
+  })
+}
+
 console.log('upstream failure')
 {
   const plugin = await loadHostHalf()
@@ -193,7 +276,7 @@ console.log('upstream failure')
   })
 }
 
-console.log('missing credential')
+console.log('no Command Code on this host')
 {
   const plugin = await loadHostHalf()
   delete process.env.COMMANDCODE_API_KEY
@@ -203,10 +286,39 @@ console.log('missing credential')
   plugin.apply(ctx)
 
   const result = await callRoute(seen.route, 'cc-quota/report', {})
-  check('a missing key names its own failure code', () => {
+  check('absence travels as a success marker, not an error', () => {
+    // An invented error code would fail the transport's union schema in the
+    // browser and surface as a transport failure — the opposite of hiding.
+    assert.equal(result.ok, true)
+    assert.equal(result.value.configured, false)
+    assert.equal(result.value.reason, 'no-commandcode-provider')
+  })
+}
+
+console.log('Command Code configured but the key resolves to nothing')
+{
+  // A discovered route makes the plugin applicable, so the failure must show.
+  const settingsPath = path.join(ISOLATED_HOME, 'settings.yaml')
+  writeFileSync(
+    settingsPath,
+    'llm-pi-ai:\n  providers:\n    cc:\n      apiKeyEnv: NOT_SET_ANYWHERE\n      baseURL: https://api.commandcode.ai/provider/v1\n',
+    'utf8',
+  )
+  const plugin = await loadHostHalf()
+  // loadHostHalf seeds an env key; this case needs the route to be the *only*
+  // thing pointing at Command Code, so the reference resolves to nothing.
+  delete process.env.COMMANDCODE_API_KEY
+  delete process.env.COMMAND_CODE_API_KEY
+  delete process.env.CMD_API_KEY
+  const { ctx, seen } = makeCtx()
+  plugin.apply(ctx)
+
+  const result = await callRoute(seen.route, 'cc-quota/report', {})
+  check('a discovered route with an unresolvable key surfaces MISSING_CREDENTIAL', () => {
     assert.equal(result.ok, false)
     assert.match(result.error.message, /\[MISSING_CREDENTIAL\]/)
   })
+  rmSync(settingsPath, { force: true })
 }
 
 console.log(`\n${passed} checks passed`)

@@ -32,9 +32,15 @@ Command Code 的套餐便宜，但额度被拆成三个互相独立的窗口，�
 - 同色的**满宽进度条**；
 - 一个灰底胶囊显示**重置倒计时**（`59m` / `6d9h` / `8d1h`），不用点也不用算。
 
-点击卡片展开：百分比背后的金额、本周期用量统计、消耗速度与预计耗尽。把侧边栏收成 56px 导轨时，卡片缩成一个 36px 圆徽，显示最短窗口的百分比。
+点击卡片展开：百分比背后的金额、配速对照、本周期用量统计、消耗速度与预计耗尽。把侧边栏收成导轨时，卡片缩成一个 36px 圆徽，显示**最紧的那条**窗口的百分比。
 
-卡片上的一切都来自**你账号自己的数据**——窗口数量、上限、百分比都是接口读出来的，不做假设。接口没上报滚动窗口的套餐（比如按量付费的 **Provider**）就不画行。Go / GOAT / Pro / Max 10× / Max 20× / Provider / Teams 都适用。
+卡片上的一切都来自**你账号自己的数据**——窗口数量、上限、百分比都是接口读出来的，不做假设。接口没上报滚动窗口的套餐（比如按量付费的 **Provider**）就不画行。Go / GOAT / Pro / Max / Provider / Teams 都适用。
+
+### 数字口径
+
+百分比由线上接口实时算出：`已用 ÷（已用 + 剩余）`。行首主值按**整数百分比**取整——和 Command Code 官方面板的取整方式一致，所以卡片和官网数字永远对得上；精确到一位小数的百分比、金额、剩余额度都在悬停提示和展开面板里。
+
+这也解释了"官网显示 100%、精确值其实是 99.84%"的现象：同一份数据，两种取整。如果哪天两边差得超过取整误差，说明口径出了问题——`已用 + 剩余 = 总额` 这个恒等式在每次改动时都会对真实账号断言一遍，就是为了抓住这种情况。
 
 ## 环境要求
 
@@ -92,11 +98,12 @@ New-Item -ItemType Junction `
 | 操作 | 结果 |
 |---|---|
 | 看侧边栏底部 | 三条窗口、百分比、进度条、重置倒计时 |
-| 点击卡片 | 展开金额、周期统计、token 量、消耗速度与预计耗尽 |
-| 悬停某行 | 精确的 `已用 / 总额`、剩余额度、绝对重置时刻 |
-| 收起侧边栏 | 卡片变成 36px 圆徽，显示最短窗口的百分比 |
+| 点击卡片 | 展开金额、配速对照、周期统计、token 量、消耗速度与预计耗尽 |
+| 悬停某行 | 精确的 `已用 / 总额`、剩余额度、一位小数百分比、绝对重置时刻 |
+| 收起侧边栏 | 卡片变成 36px 圆徽，显示最紧窗口的百分比 |
+| 在对话里输入 `/quota` | 把同一份报告打印进对话 |
 
-卡片每 60 秒刷新，宿主半另有 15 秒缓存。
+卡片每 60 秒刷新（任一窗口超过 85% 后提速到 15 秒），宿主半另有 15 秒缓存；`/quota` 命令读的正是卡片那份缓存报告，多敲一次命令不会多打上游接口。
 
 ## 凭据解析
 
@@ -120,6 +127,7 @@ API key 不会进浏览器。宿主半按下面的顺序解析，命中即停，
 | `ctx.slots.register({ name, id, order, inject }, Component)` | 贡献卡片 |
 | `ctx.connection.rpc.call(channel, endpoint, payload, signal)` | 浏览器侧的请求 |
 | `ctx.connection.fetch.register({ path, methods, requestBody, fetch })` | 宿主侧的路由 |
+| `ctx.get('commands')` + `commands.register({ name, description, handler })` | 可选的 `/quota` 斜杠命令 |
 | `dsh.client` 清单 + `exports["./client"]` | 客户端 bundle 发现，服务于 `/plugins/<id>/client.js` |
 
 > **为什么用精确 Fetch 路由而不是 `connection.rpc.handle`？** `rpc.handle` 挂载通道走的是 `owner.webServer`，而 `owner` 是 Connection 服务自己的 context——那里永远没注入 `webServer`。任何其他插件调用它都会抛 `cannot get property "webServer" without inject`，调用方 inject 什么都没用。`connection.fetch.register` 只写内部路由表，任何插件 fiber 都能用，而且天然继承共享 `/api` 传输的 Host/Origin 校验与浏览器会话 Cookie。

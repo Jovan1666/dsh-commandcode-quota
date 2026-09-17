@@ -1,27 +1,33 @@
 /**
- * dsh-cc-quota browser half.
+ * dsh-commandcode-quota browser half.
  *
  * Registers one card into the sidebar-owned `sidebar.footer.action` list slot,
  * which the sidebar shell renders directly above the Settings seat in both
  * sidebar widths. The card asks the host for a quota report over the exact Fetch
- * route this plugin's host half registers on the shared `/api` transport
- * (`/api/cc-quota/report`), and renders every credit window the account reports.
+ * route this plugin's host half registers on the shared `/api` transport, and
+ * renders every credit window the account reports.
  *
  * Presentation rules:
  *
  * - Windows run shortest first (5 hours, weekly, monthly), so the tightest
  *   constraint sits where the eye lands first.
- * - The used *percentage* is the row's value and the bar repeats it
- *   graphically; credit amounts are secondary and live in the expanded body,
- *   because a user rarely knows their plan's totals but reads "98.6%" instantly.
- * - Each window is a two-line block — a label/percentage line, then a full-width
- *   bar with the reset countdown on the following line — so the meter reads as a
- *   meter instead of an underline, and nothing competes for the same line.
+ * - The used *percentage* is the row's value and the bar repeats it graphically;
+ *   credit amounts are secondary and live in the expanded body, because a user
+ *   rarely knows their plan's totals but reads "98.6%" instantly. The headline
+ *   rounds to a whole percent — the same rounding the official dashboard uses —
+ *   so the card and the website can be compared without a mental conversion;
+ *   the exact one-decimal value stays on the row's hover tooltip.
+ * - The bar also carries a tick at the window's *elapsed* share, so "will this
+ *   last until it resets?" is answered by two marks instead of by arithmetic.
+ *   That comparison replaces an extrapolated exhaustion time: credit burn is
+ *   bursty, while two cumulative shares over the same window stay comparable.
+ * - The card renders nothing at all when this host has no Command Code provider,
+ *   so installing the plugin cannot park an error box in the sidebar of somebody
+ *   who does not use the service.
  *
  * Written as a hand-authored bundle: no build step, so the component uses
  * `React.createElement` rather than JSX, and styling is one injected stylesheet
- * keyed on the `.ccq-` prefix using the harness's own design tokens. Literal
- * colours appear only as the terminal fallback of a `var()`.
+ * keyed on the `.ccq-` prefix using the harness's own design tokens.
  */
 
 window.__ModuleLoader__.load({
@@ -33,15 +39,20 @@ window.__ModuleLoader__.load({
     const module = { exports: {} }
     const exports = module.exports
 
-    /** Panel auto-refresh interval; the host caches for 15s on its side. */
-    const REFRESH_MS = 60_000
-    /** Shared browser transport; the host registers its exact route under this channel. */
+    /** Channel and endpoint the host half registers. */
     const CHANNEL = '/api'
-    /** Endpoint the host half registers inside that channel. */
     const ENDPOINT = 'cc-quota/report'
     const STYLE_ID = 'dsh-commandcode-quota-style'
+    /** Locale namespace this plugin owns. */
+    const NS = 'cc-quota'
+    /** Poll cadence: relaxed normally, tight once any window is near its cap. */
+    const SLOW_MS = 60_000
+    const FAST_MS = 15_000
+    /** Used percentage at which a window counts as "hot" for polling purposes. */
+    const HOT_PERCENT = 85
+    /** Where to send someone who needs more credit. */
+    const BILLING_URL = 'https://commandcode.ai/pricing'
 
-    /** Used-percentage thresholds; above each, the bar takes the next colour. */
     const LEVELS = [
       { below: 60, token: 'var(--dsw-alias-state-success-primary)' },
       { below: 85, token: 'var(--dsw-alias-state-warn-primary)' },
@@ -50,10 +61,64 @@ window.__ModuleLoader__.load({
 
     /** Display order: the shortest window first, the monthly budget last. */
     const WINDOWS = [
-      { key: 'fiveHour', label: '5 小时' },
-      { key: 'weekly', label: '每周' },
-      { key: 'monthly', label: '月度' },
+      { key: 'fiveHour', label: 'fiveHour' },
+      { key: 'weekly', label: 'weekly' },
+      { key: 'monthly', label: 'monthly' },
     ]
+
+    /** Every string this plugin renders, in both shipped UI languages. */
+    const DICT = {
+      zh: {
+        fiveHour: '5 小时',
+        weekly: '每周',
+        monthly: '月度',
+        left: '剩',
+        reset: '{time} 后重置',
+        overLimit: '已超限',
+        over: '超速',
+        on: '正常',
+        under: '富余',
+        paceLine: '已用 {used}% · 窗口已过 {elapsed}% · {state}',
+        usedOf: '{label}已用',
+        requests: '{count} 请求 · {rate}%',
+        tokens: '输入 {in} / 输出 {out}',
+        burn: '{rate}/天',
+        runsOut: '约 {days} 天后耗尽',
+        balance: '额外额度',
+        belowThreshold: '额度已低于阈值',
+        subCanceled: '订阅已取消，{date} 到期',
+        subStatus: '订阅状态：{status}',
+        billing: '查看套餐与额度',
+        none: '该套餐未上报额度窗口',
+        retry: '点击重试',
+        stale: '上次成功：{age}前',
+      },
+      en: {
+        fiveHour: '5-hour',
+        weekly: 'Weekly',
+        monthly: 'Monthly',
+        left: 'left',
+        reset: 'resets in {time}',
+        overLimit: 'over limit',
+        over: 'over pace',
+        on: 'on pace',
+        under: 'under pace',
+        paceLine: '{used}% used · {elapsed}% elapsed · {state}',
+        usedOf: '{label} used',
+        requests: '{count} requests · {rate}%',
+        tokens: 'in {in} / out {out}',
+        burn: '{rate}/day',
+        runsOut: 'exhausted in about {days} days',
+        balance: 'Extra credit',
+        belowThreshold: 'credit is below the configured threshold',
+        subCanceled: 'Subscription canceled, ends {date}',
+        subStatus: 'Subscription: {status}',
+        billing: 'View plans and credits',
+        none: 'this plan reports no credit windows',
+        retry: 'click to retry',
+        stale: 'last success {age} ago',
+      },
+    }
 
     const CSS = `
 .ccq-card{box-sizing:border-box;width:100%;margin:0 0 6px;padding:11px 13px 12px;border-radius:12px;
@@ -61,6 +126,7 @@ window.__ModuleLoader__.load({
   color:var(--dsw-alias-label-primary);font-family:inherit;text-align:left;
   cursor:pointer;-webkit-user-select:none;user-select:none}
 .ccq-card:hover{background:var(--dsw-alias-button-floating-hover)}
+.ccq-card.ccq-stale{opacity:.62}
 .ccq-head{display:flex;align-items:center;gap:6px;padding-bottom:9px;margin-bottom:10px;
   border-bottom:1px solid var(--dsw-alias-border-l1)}
 .ccq-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
@@ -78,19 +144,30 @@ window.__ModuleLoader__.load({
 .ccq-reset{flex:none;padding:1px 6px;border-radius:6px;font-size:10px;line-height:14px;
   background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-tertiary);
   font-variant-numeric:tabular-nums;white-space:nowrap}
-.ccq-track{height:6px;margin-top:7px;border-radius:3px;overflow:hidden;
+.ccq-track{position:relative;height:6px;margin-top:7px;border-radius:3px;overflow:hidden;
   background:var(--dsw-alias-interactive-bg-hover)}
 .ccq-fill{display:block;height:100%;border-radius:3px;transition:width 240ms ease,background 240ms ease}
+.ccq-tick{position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;border-radius:1px;
+  background:var(--dsw-alias-label-primary);opacity:.55}
+.ccq-warn{display:flex;align-items:center;gap:6px;margin-top:10px;padding:5px 7px;border-radius:7px;
+  font-size:10px;line-height:15px;background:var(--dsw-alias-interactive-bg-hover-danger);
+  color:var(--dsw-alias-state-error-primary)}
 .ccq-detail{margin-top:12px;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l1)}
 .ccq-kv{display:flex;align-items:baseline;justify-content:space-between;gap:10px;
   font-size:11px;line-height:19px;color:var(--dsw-alias-label-secondary)}
 .ccq-kv-label{flex:none;white-space:nowrap}
 .ccq-kv-value{min-width:0;text-align:right;color:var(--dsw-alias-label-primary);
   font-variant-numeric:tabular-nums}
+.ccq-pace{margin-top:3px;font-size:10px;line-height:15px;color:var(--dsw-alias-label-caption);
+  font-variant-numeric:tabular-nums}
+.ccq-pace.ccq-over{color:var(--dsw-alias-state-error-primary)}
 .ccq-note{margin-top:7px;padding-top:7px;border-top:1px solid var(--dsw-alias-border-l1);
   font-size:10px;line-height:16px;color:var(--dsw-alias-label-caption);
   font-variant-numeric:tabular-nums}
 .ccq-note+.ccq-note{margin-top:1px;padding-top:0;border-top:none}
+.ccq-link{display:inline-block;margin-top:8px;font-size:10px;line-height:15px;
+  color:var(--dsw-alias-link);text-decoration:none}
+.ccq-link:hover{text-decoration:underline}
 .ccq-error{font-size:11px;line-height:18px;color:var(--dsw-alias-state-error-primary)}
 .ccq-rail{box-sizing:border-box;width:36px;height:36px;border-radius:50%;display:flex;
   align-items:center;justify-content:center;font-size:11px;font-weight:600;
@@ -107,6 +184,12 @@ window.__ModuleLoader__.load({
       document.head.appendChild(style)
     }
 
+    /** Substitute `{name}` placeholders; the locale service owns the wording only. */
+    function format(template, params) {
+      return Object.entries(params ?? {})
+        .reduce((text, [key, value]) => text.split(`{${key}}`).join(String(value)), String(template))
+    }
+
     /** Native colour token for a used percentage; unknown reads as the healthy level. */
     function levelToken(percent) {
       const level = LEVELS.find((entry) => (percent === undefined ? 0 : percent) < entry.below)
@@ -121,8 +204,18 @@ window.__ModuleLoader__.load({
       return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(1)}%` : '—'
     }
 
+    /**
+     * Glance value for the row headline: a whole percent, rounded the way the
+     * official dashboard rounds. The underlying report keeps full precision, so
+     * a card showing "100%" and a tooltip showing "99.8%" are the same truth at
+     * two roundings — and the card never disagrees with the website's number.
+     */
+    function headlinePercent(value) {
+      return typeof value === 'number' && Number.isFinite(value) ? `${Math.round(value)}%` : '—'
+    }
+
     function tokens(value) {
-      if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+      if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
       if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`
       if (value >= 1e6) return `${(value / 1e6).toFixed(2)}M`
       if (value >= 1e3) return `${(value / 1e3).toFixed(1)}K`
@@ -137,40 +230,32 @@ window.__ModuleLoader__.load({
       return `${pad(target.getMonth() + 1)}-${pad(target.getDate())} ${pad(target.getHours())}:${pad(target.getMinutes())}`
     }
 
-    /**
-     * Short countdown for the row chip: `42m`, `3h12m`, `6d10h`. Deliberately
-     * terse — it sits beside the percentage, and the absolute reset time and the
-     * long form are one hover (or one click) away.
-     */
+    /** Terse countdown for the row chip: `59m`, `3h25m`, `6d9h`. */
     function shortCountdown(timestamp) {
       if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) return undefined
       const minutes = Math.floor((timestamp - Date.now()) / 60_000)
-      if (minutes <= 0) return '即将重置'
-      if (minutes < 60) return `${minutes}m 后重置`
+      if (minutes <= 0) return '0m'
+      if (minutes < 60) return `${minutes}m`
       const hours = Math.floor(minutes / 60)
-      if (hours < 24) return `${hours}h${minutes % 60}m 后重置`
-      return `${Math.floor(hours / 24)}d${hours % 24}h 后重置`
+      if (hours < 24) return `${hours}h${minutes % 60}m`
+      return `${Math.floor(hours / 24)}d${hours % 24}h`
     }
 
-    /** Verbose countdown for the detail panel. */
-    function longCountdown(timestamp) {
+    /** Coarse age of a timestamp, for the stale marker. */
+    function ageOf(timestamp) {
       if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) return undefined
-      const minutes = Math.floor((timestamp - Date.now()) / 60_000)
-      if (minutes <= 0) return '即将重置'
-      const days = Math.floor(minutes / 1440)
-      const hours = Math.floor((minutes % 1440) / 60)
-      if (days > 0) return `${days} 天 ${hours} 小时后`
-      if (hours > 0) return `${hours} 小时 ${minutes % 60} 分后`
-      return `${minutes} 分后`
+      const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60_000))
+      if (minutes < 1) return '<1m'
+      if (minutes < 60) return `${minutes}m`
+      const hours = Math.floor(minutes / 60)
+      return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`
     }
 
     /**
      * Normalize the report's windows into one render shape.
      *
-     * The host derives `percent` and the caps from the account's own plan, so
-     * this stays plan-agnostic: a plan that reports no window (the
-     * pay-as-you-go Provider plan, say) simply yields no row. The monthly reset
-     * comes from the subscription period rather than a window limit.
+     * The host derives caps and percentages from the account's own plan, so a
+     * plan that reports no window (pay-as-you-go Provider, say) yields no row.
      *
      * @param report - the host's normalized quota report.
      * @returns one row per window the account actually reports.
@@ -196,12 +281,18 @@ window.__ModuleLoader__.load({
           remaining: used !== undefined && cap !== undefined ? cap - used : undefined,
           resetAt: key === 'monthly' ? periodEnd : source.resetAt,
           exceeded: source.exceeded === true,
+          pace: source.pace,
         })
       }
       return rows
     }
 
-    /** On-demand balance for accounts that buy credits instead of holding an allowance. */
+    /** True when any reported window is close enough to its cap to poll faster. */
+    function anyHot(report) {
+      return windowsOf(report).some((row) => (row.percent ?? 0) >= HOT_PERCENT)
+    }
+
+    /** On-demand balance, for accounts that buy credit instead of holding an allowance. */
     function balanceOf(report) {
       const free = report?.monthly?.freeCredits
       const purchased = report?.monthly?.purchasedCredits
@@ -209,45 +300,75 @@ window.__ModuleLoader__.load({
       return { free: free ?? 0, purchased: purchased ?? 0 }
     }
 
+    /** Everything worth warning about, in priority order. */
+    function warningsOf(report, t) {
+      const warnings = []
+      if (report?.monthly?.belowThreshold === true) warnings.push(t('belowThreshold'))
+      const plan = report?.plan
+      if (plan?.cancelAtPeriodEnd === true) {
+        warnings.push(format(t('subCanceled'), { date: when(Date.parse(plan.currentPeriodEnd)) ?? '—' }))
+      } else if (plan?.status !== undefined && plan.status !== 'active') {
+        warnings.push(format(t('subStatus'), { status: plan.status }))
+      }
+      return warnings
+    }
+
     function describeError(result) {
       if (result !== null && typeof result === 'object' && typeof result.error?.message === 'string') {
         return result.error.message
       }
-      return '额度接口返回了无法识别的结果'
+      return 'unrecognized response'
     }
 
     /**
-     * Fetch the report once, then on an interval, for as long as the card is
-     * mounted. One AbortController covers the effect's lifetime so unmount and
-     * manual refresh both cancel whatever is in flight.
+     * Fetch the report, then keep fetching on a cadence that tightens while any
+     * window is close to its cap. The last good report survives failures, so a
+     * transient error dims the numbers instead of blanking the card.
+     *
+     * @param fetchQuota - transport callback injected by this plugin's apply.
+     * @returns the current state plus a manual refresh.
      */
     function useQuota(fetchQuota) {
-      const [state, setState] = React.useState({ phase: 'loading' })
+      const [state, setState] = React.useState({ phase: 'idle' })
       const [nonce, setNonce] = React.useState(0)
 
       React.useEffect(() => {
         const controller = new AbortController()
-        const settle = (next) => { if (!controller.signal.aborted) setState(next) }
+        let timer
         const load = () => {
+          const fail = (message) => {
+            setState((previous) => ({ phase: 'error', message, report: previous.report, at: previous.at }))
+            timer = window.setTimeout(load, SLOW_MS)
+          }
           // Promise.resolve() turns a synchronous throw from the transport into
           // a rejection, so the card reports it instead of unmounting.
           Promise.resolve()
             .then(() => fetchQuota(controller.signal))
             .then(
               (result) => {
-                if (result !== null && typeof result === 'object' && result.ok === true) {
-                  settle({ phase: 'ready', report: result.value, at: Date.now() })
-                } else {
-                  settle({ phase: 'error', message: describeError(result) })
+                if (controller.signal.aborted) return
+                if (result === null || typeof result !== 'object' || result.ok !== true) {
+                  fail(describeError(result))
+                  return
                 }
+                const value = result.value
+                if (value !== null && typeof value === 'object' && value.configured === false) {
+                  // This host does not use Command Code: stay invisible.
+                  setState({ phase: 'absent' })
+                  return
+                }
+                setState({ phase: 'ready', report: value, at: Date.now() })
+                timer = window.setTimeout(load, anyHot(value) ? FAST_MS : SLOW_MS)
               },
-              (error) => { settle({ phase: 'error', message: String(error?.message ?? error) }) },
+              (error) => {
+                if (controller.signal.aborted) return
+                fail(String(error?.message ?? error))
+              },
             )
         }
         load()
-        const timer = window.setInterval(load, REFRESH_MS)
         return () => {
-          window.clearInterval(timer)
+          window.clearTimeout(timer)
           controller.abort()
         }
       }, [fetchQuota, nonce])
@@ -256,108 +377,143 @@ window.__ModuleLoader__.load({
       return { state, refresh }
     }
 
-    /**
-     * One credit window: label and percentage on the first line, the meter and
-     * its reset countdown on the next. Nothing shares a line with the meter.
-     */
-    function WindowRow({ row }) {
+    /** One credit window: label and percentage, the meter with its pace tick, and the reset chip. */
+    function WindowRow({ row, t }) {
+      const percent = row.percent
+      const color = levelToken(percent)
+      const countdown = shortCountdown(row.resetAt)
       const tips = [
-        row.used !== undefined && row.cap !== undefined ? `已用 ${money(row.used)} / ${money(row.cap)}` : undefined,
-        row.remaining !== undefined ? `剩余 ${money(row.remaining)}` : undefined,
-        row.resetAt === undefined ? undefined : `${when(row.resetAt) ?? '—'} 重置（${longCountdown(row.resetAt) ?? '—'}）`,
+        row.used !== undefined && row.cap !== undefined
+          ? `${format(t('usedOf'), { label: t(row.label) })} ${money(row.used)} / ${money(row.cap)}`
+          : undefined,
+        row.remaining !== undefined ? `${t('left')} ${money(row.remaining)}` : undefined,
+        // The exact reset instant stays one hover away even though the row chip
+        // only carries the countdown.
+        row.resetAt === undefined ? undefined : when(row.resetAt),
+        row.pace === undefined
+          ? undefined
+          : format(t('paceLine'), {
+              used: (percent ?? 0).toFixed(1),
+              elapsed: row.pace.elapsedPercent.toFixed(1),
+              state: t(row.pace.state),
+            }),
       ].filter((part) => part !== undefined)
-      const fill = Math.max(0, Math.min(100, row.percent ?? 0))
-      const color = levelToken(row.percent)
-      const reset = row.exceeded ? '已超限' : shortCountdown(row.resetAt)
+      const fill = Math.max(0, Math.min(100, percent ?? 0))
+      const chip = row.exceeded ? t('overLimit') : countdown === undefined ? undefined : format(t('reset'), { time: countdown })
       return h('div', { className: 'ccq-win', title: tips.join(' · ') },
         h('div', { className: 'ccq-winhead' },
-          h('span', { className: 'ccq-winlabel' }, row.label),
+          h('span', { className: 'ccq-winlabel' }, t(row.label)),
           h('span', { className: 'ccq-spacer' }),
-          reset === undefined ? null : h('span', { className: 'ccq-reset' }, reset),
-          h('span', { className: 'ccq-pct', style: { color } }, percentText(row.percent)),
+          chip === undefined ? null : h('span', { className: 'ccq-reset' }, chip),
+          h('span', { className: 'ccq-pct', style: { color } }, headlinePercent(percent)),
         ),
         h('div', { className: 'ccq-track' },
-          h('span', { className: 'ccq-fill', style: { width: `${fill}%`, background: color } })),
+          h('span', { className: 'ccq-fill', style: { width: `${fill}%`, background: color } }),
+          // Where the window's elapsed share sits. The fill crossing this mark,
+          // plus the row colour, is the entire "will it last" signal.
+          row.pace === undefined
+            ? null
+            : h('span', {
+                className: 'ccq-tick',
+                style: { left: `${Math.max(0, Math.min(100, row.pace.elapsedPercent))}%` },
+              }),
+        ),
       )
     }
 
     /** One label/value detail line; the label never shrinks, the value wraps. */
-    function Detail({ label, value, danger }) {
+    function Detail({ label, value }) {
       return h('div', { className: 'ccq-kv' },
         h('span', { className: 'ccq-kv-label' }, label),
-        h('span', {
-          className: 'ccq-kv-value',
-          style: danger === true ? { color: 'var(--dsw-alias-state-error-primary)' } : undefined,
-        }, value),
+        h('span', { className: 'ccq-kv-value' }, value),
       )
     }
 
-    /**
-     * Expanded body: the amounts behind each percentage, then the period totals
-     * as plain muted lines — no label column, so nothing gets squeezed.
-     */
-    function detailRows(report, rows) {
+    /** Expanded body: amounts per window, then the period totals as muted lines. */
+    function detailRows(report, rows, t) {
       const body = []
       for (const row of rows) {
         if (row.used === undefined || row.cap === undefined) continue
         body.push(h(Detail, {
           key: `${row.key}-amount`,
-          label: row.label,
-          value: `${money(row.used)} / ${money(row.cap)}${row.remaining === undefined ? '' : ` · 剩 ${money(row.remaining)}`}`,
+          label: format(t('usedOf'), { label: t(row.label) }),
+          value: `${money(row.used)} / ${money(row.cap)}${row.remaining === undefined ? '' : ` · ${t('left')} ${money(row.remaining)}`}`,
         }))
+        if (row.pace !== undefined) {
+          body.push(h('div', {
+            key: `${row.key}-pace`,
+            className: `ccq-pace${row.pace.state === 'over' ? ' ccq-over' : ''}`,
+          }, format(t('paceLine'), {
+            used: (row.percent ?? 0).toFixed(1),
+            elapsed: row.pace.elapsedPercent.toFixed(1),
+            state: t(row.pace.state),
+          })))
+        }
       }
+
       const balance = balanceOf(report)
       if (balance !== undefined) {
         body.push(h(Detail, {
           key: 'balance',
-          label: '额外额度',
-          value: `赠送 ${money(balance.free)} · 已购 ${money(balance.purchased)}`,
+          label: t('balance'),
+          value: `${money(balance.free)} · ${money(balance.purchased)}`,
         }))
       }
 
       const notes = []
       const totals = report?.totals
       if (totals?.requests !== undefined) {
-        notes.push(`本周期 ${totals.requests.toLocaleString('en-US')} 请求${totals.successRate === undefined ? '' : ` · ${totals.successRate}%`}`)
-        const tokenIn = tokens(totals?.tokensIn)
-        if (tokenIn !== undefined) notes.push(`in ${tokenIn} / out ${tokens(totals?.tokensOut) ?? '—'}`)
+        notes.push(format(t('requests'), {
+          count: totals.requests.toLocaleString('en-US'),
+          rate: totals.successRate ?? '—',
+        }))
+        notes.push(format(t('tokens'), { in: tokens(totals.tokensIn), out: tokens(totals.tokensOut) }))
       }
       const projection = report?.projection
       if (projection?.runsOutInDays !== undefined) {
         const daysLeft = projection.totalDays - projection.elapsedDays
+        const burn = `$${projection.dailyRate.toFixed(2)}`
         notes.push(
-          `$${projection.dailyRate.toFixed(2)}/天${
-            projection.runsOutInDays < daysLeft ? ` · 约 ${projection.runsOutInDays.toFixed(1)} 天后耗尽` : ''
-          }`,
+          projection.runsOutInDays < daysLeft
+            ? `${format(t('burn'), { rate: burn })} · ${format(t('runsOut'), { days: projection.runsOutInDays.toFixed(1) })}`
+            : format(t('burn'), { rate: burn }),
         )
-      }
-      if (Array.isArray(report?.failures) && report.failures.length > 0) {
-        notes.push(`${report.failures.length} 个端点降级`)
       }
       for (const [index, note] of notes.entries()) {
         body.push(h('div', { key: `note-${String(index)}`, className: 'ccq-note' }, note))
       }
+      body.push(h('a', {
+        key: 'billing',
+        className: 'ccq-link',
+        href: BILLING_URL,
+        target: '_blank',
+        rel: 'noreferrer',
+        onClick: (event) => { event.stopPropagation() },
+      }, t('billing')))
       return body
     }
 
     /** Tooltip / rail summary: the percentages, which are the card's own headline. */
-    function summaryTitle(report, rows) {
+    function summaryTitle(rows, t) {
       return rows
-        .map((row) => `${row.label} ${percentText(row.percent)}${row.remaining === undefined ? '' : `（剩 ${money(row.remaining)}）`}`)
+        .map((row) => `${t(row.label)} ${percentText(row.percent)}${row.remaining === undefined ? '' : ` (${t('left')} ${money(row.remaining)})`}`)
         .join(' · ')
     }
 
     /** The 36px rail badge shown while the sidebar is collapsed. */
-    function RailBadge({ state }) {
-      if (state.phase !== 'ready') {
-        return h('div', { className: 'ccq-rail', title: state.phase === 'error' ? state.message : '正在读取额度…' }, '…')
-      }
+    function RailBadge({ state, t }) {
+      if (state.report === undefined) return null
       const rows = windowsOf(state.report)
-      const headline = rows[0]
-      if (headline === undefined) return h('div', { className: 'ccq-rail', title: '该账号未上报额度窗口' }, '—')
+      // The most constrained window, not the shortest one: a collapsed rail has
+      // room for a single number and the alarming one is the useful one.
+      const headline = rows.reduce(
+        (worst, row) => (worst === undefined || (row.percent ?? 0) > (worst.percent ?? 0) ? row : worst),
+        undefined,
+      )
+      if (headline === undefined) return null
       return h('div', {
         className: 'ccq-rail',
-        title: summaryTitle(state.report, rows),
+        title: summaryTitle(rows, t),
         style: { color: levelToken(headline.percent) },
       }, `${(headline.percent ?? 0).toFixed(0)}%`)
     }
@@ -366,36 +522,42 @@ window.__ModuleLoader__.load({
     function QuotaCard(props) {
       const [open, setOpen] = React.useState(false)
       const { state, refresh } = useQuota(props.fetchQuota)
-      const wide = props.wide !== false
+      const t = props.t
 
-      if (!wide) return h(RailBadge, { state })
+      // Nothing to say: this host does not use Command Code, or the first answer
+      // has not arrived. Rendering nothing avoids an error box for non-users and
+      // a flash of skeleton for everyone else.
+      if (state.phase === 'absent' || state.phase === 'idle') return null
+      if (props.wide === false) return h(RailBadge, { state, t })
 
-      const report = state.phase === 'ready' ? state.report : undefined
+      const report = state.report
       const rows = report === undefined ? [] : windowsOf(report)
+      const stale = state.phase === 'error' && report !== undefined
       const planName = report?.plan?.name ?? 'Command Code'
 
       let body
-      if (state.phase === 'error') {
+      if (report === undefined) {
         body = [
           h('div', { key: 'error', className: 'ccq-error' }, state.message),
-          h('div', { key: 'hint', className: 'ccq-error' }, '点击重试'),
+          h('div', { key: 'hint', className: 'ccq-error' }, t('retry')),
         ]
-      } else if (report === undefined) {
-        body = WINDOWS.map(({ key, label }) => h(WindowRow, {
-          key,
-          row: { key, label, percent: undefined, used: undefined, cap: undefined, remaining: undefined, resetAt: undefined },
-        }))
       } else if (rows.length === 0) {
-        body = [h('div', { key: 'none', className: 'ccq-error' }, '该套餐未上报额度窗口')]
+        body = [h('div', { key: 'none', className: 'ccq-note' }, t('none'))]
       } else {
-        body = rows.map((row) => h(WindowRow, { key: row.key, row }))
+        body = [
+          ...rows.map((row) => h(WindowRow, { key: row.key, row, t })),
+          ...warningsOf(report, t).map((warning, index) => h('div', {
+            key: `warn-${String(index)}`,
+            className: 'ccq-warn',
+          }, warning)),
+        ]
       }
 
       return h('div', {
-        className: 'ccq-card',
-        title: report === undefined ? undefined : summaryTitle(report, rows),
+        className: `ccq-card${stale ? ' ccq-stale' : ''}`,
+        title: rows.length === 0 ? undefined : summaryTitle(rows, t),
         onClick: () => {
-          if (state.phase === 'error') { refresh(); return }
+          if (report === undefined) { refresh(); return }
           setOpen((value) => !value)
         },
       },
@@ -405,28 +567,33 @@ window.__ModuleLoader__.load({
           h('span', { className: `ccq-chevron${open ? ' ccq-open' : ''}` }, '▾'),
         ),
         ...body,
-        open && report !== undefined ? h('div', { className: 'ccq-detail' }, ...detailRows(report, rows)) : null,
+        stale ? h('div', { className: 'ccq-note' }, format(t('stale'), { age: ageOf(state.at) ?? '—' })) : null,
+        open && report !== undefined ? h('div', { className: 'ccq-detail' }, ...detailRows(report, rows, t)) : null,
       )
     }
 
     /**
-     * Register the card once the sidebar declares the footer-action hole.
+     * Register this plugin's UI dictionaries and the card itself, the latter once
+     * the sidebar declares the footer-action hole.
      * @param ctx - client plugin context.
      */
     function apply(ctx) {
       ensureStyles()
+      ctx.effect(() => ctx.locale.register(NS, DICT), 'cc-quota: dictionaries')
+      const t = ctx.locale.bind(NS)
       ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
         name: 'sidebar.footer.action',
         id: 'cc-quota',
         order: 0,
         inject: () => ({
           fetchQuota: (signal) => ctx.connection.rpc.call(CHANNEL, ENDPOINT, {}, signal),
+          t,
         }),
       }, QuotaCard))
     }
 
     exports.apply = apply
-    exports.inject = ['slots', 'connection']
+    exports.inject = ['slots', 'connection', 'locale']
     return module.exports
   },
 })
