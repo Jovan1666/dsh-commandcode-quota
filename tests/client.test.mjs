@@ -256,12 +256,35 @@ console.log('plan-agnostic rendering')
     assert.equal(labelsIn(html).length, 0)
     assert.match(html, /该套餐未上报额度窗口/)
   })
-  check('numbers in the detail body match the report', () => {
+  check('the detail body carries the monthly allowance and the period totals', () => {
     const html = renderReady(GOAT, true)
-    assert.match(html, /\$68\.89 \/ \$70\.21 · 剩 \$1\.32/)
-    assert.match(html, /\$2\.18 \/ \$14\.00/)
-    assert.match(html, /17,859 请求 · 100%/)
-    assert.match(html, /\$3\.00\/天 · 约 0\.4 天后耗尽/)
+    const detail = html.slice(html.indexOf('ccq-detail'))
+    assert.match(detail, /月度已用<\/span><span[^>]*>\$68\.89 \/ \$70\.21</)
+    assert.match(detail, /剩余<\/span><span[^>]*>\$1\.32</)
+    assert.match(detail, /17,859 请求 · 100%/)
+    assert.match(detail, /输入 3\.34B \/ 输出 16\.32M/)
+  })
+  check('remaining credit carries the monthly urgency colour', () => {
+    const html = renderReady(GOAT, true)
+    const detail = html.slice(html.indexOf('ccq-detail'))
+    assert.match(detail, /剩余<\/span><span class="ccq-kv-value" style="color:var\(--dsw-alias-state-error-primary\)">\$1\.32/)
+  })
+  check('the detail body leaves the rolling windows out of the money report', () => {
+    // 5-hour and weekly are pass/fail limits: a user budgets against the
+    // monthly allowance, and their dollar rows were pure noise in the sidebar.
+    const html = renderReady(GOAT, true)
+    const detail = html.slice(html.indexOf('ccq-detail'))
+    assert.doesNotMatch(detail, /\$2\.18 \/ \$14\.00/)
+    assert.doesNotMatch(detail, /\$2\.31 \/ \$35\.00/)
+    assert.equal([...detail.matchAll(/class="ccq-kv"/g)].length, 2, 'used and remaining, nothing else')
+  })
+  check('no pace, burn-rate or projection language survives anywhere', () => {
+    // Deliberate removal: how fast someone burns credit is not the card's
+    // business, and "over pace" cannot be acted on by anyone who has work to do.
+    const html = renderReady(GOAT, true)
+    for (const banned of ['窗口已过', '超速', '富余', 'ccq-tick', 'ccq-pace', '/天', '天后耗尽', '每天']) {
+      assert.equal(html.includes(banned), false, `card still mentions ${banned}`)
+    }
   })
   check('the exact reset instant stays on the row tooltip', () => {
     const html = renderReady(GOAT)
@@ -269,24 +292,8 @@ console.log('plan-agnostic rendering')
   })
 }
 
-console.log('pace and warnings')
+console.log('warnings')
 {
-  const PACED = {
-    ...GOAT,
-    fiveHour: { ...GOAT.fiveHour, pace: { elapsedPercent: 80, delta: -64.4, state: 'under' } },
-    weekly: { ...GOAT.weekly, pace: { elapsedPercent: 5, delta: 1.6, state: 'on' } },
-    monthly: { ...GOAT.monthly, pace: { elapsedPercent: 74.2, delta: 23.9, state: 'over' } },
-  }
-  check('the bar carries a tick at each window elapsed share', () => {
-    const html = renderReady(PACED)
-    const ticks = [...html.matchAll(/class="ccq-tick" style="left:([\d.]+)%/g)].map((match) => match[1])
-    assert.deepEqual(ticks, ['80', '5', '74.2'])
-  })
-  check('the expanded body names the pace comparison', () => {
-    const html = renderReady(PACED, true)
-    assert.match(html, /已用 98\.1% · 窗口已过 74\.2% · 超速/)
-    assert.match(html, /ccq-pace ccq-over/)
-  })
   check('a below-threshold balance and a canceled subscription raise warnings', () => {
     const html = renderReady({
       ...GOAT,

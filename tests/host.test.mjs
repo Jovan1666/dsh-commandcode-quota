@@ -218,10 +218,12 @@ console.log('/quota slash command')
   check('the command answers from the same cached report the card reads', async () => {
     assert.equal(outcome.kind, 'success')
     assert.match(outcome.text, /^Command Code · GOAT \(active\)\n/)
-    // percent is one-decimal precise in chat output; amounts come from the fixture
-    assert.match(outcome.text, /Monthly 96\.6% used · \$67\.68 \/ \$70\.08 · resets in \d+d\d+h/)
-    assert.match(outcome.text, /5-hour 15\.6% used · \$2\.18 \/ \$14\.00 · resets in /)
-    assert.match(outcome.text, /Weekly 6\.6% used · \$2\.31 \/ \$35\.00 · resets in /)
+    // Money is printed for the monthly allowance only, matching the card.
+    assert.match(outcome.text, /Monthly 96\.6% used · \$67\.68 \/ \$70\.08 · \$2\.40 left · resets in \d+d\d+h/)
+    assert.match(outcome.text, /5-hour 15\.6% used · resets in /)
+    assert.match(outcome.text, /Weekly 6\.6% used · resets in /)
+    assert.equal(outcome.text.includes('$2.18'), false, 'rolling windows carry no money')
+    assert.equal(outcome.text.includes('$2.31'), false, 'rolling windows carry no money')
     assert.match(outcome.text, /17,641 requests · 100% success · in .+ \/ out .+/)
   })
 

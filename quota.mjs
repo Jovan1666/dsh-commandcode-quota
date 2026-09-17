@@ -401,45 +401,6 @@ function parseWindow(block) {
 }
 
 /**
- * Nominal span of each rolling window. The API reports when a window resets but
- * not when it opened, and Command Code's windows roll from first use, so the
- * open instant is the reset minus this span.
- */
-const WINDOW_SPAN_MS = Object.freeze({
-  fiveHour: 5 * 3_600_000,
-  weekly: 7 * 86_400_000,
-});
-
-/**
- * Compare how much of a window is spent against how much of it has elapsed.
- *
- * This is deliberately preferred over extrapolating a rate: credit burn is
- * bursty, so a projected exhaustion time swings wildly, while two cumulative
- * shares measured over the same window stay comparable. `state` answers the
- * only question that matters — at this pace, does the window run out before it
- * resets?
- *
- * @param percent - used percentage, or undefined when the host reported none.
- * @param start - window open instant in epoch milliseconds.
- * @param end - window reset instant in epoch milliseconds.
- * @param now - current instant, injected so callers and tests agree.
- * @returns the pace block, or undefined when either instant is unusable.
- */
-function paceOf(percent, start, end, now) {
-  if (percent === undefined || start === undefined || end === undefined) return undefined;
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return undefined;
-  const raw = ((now - start) / (end - start)) * 100;
-  if (!Number.isFinite(raw)) return undefined;
-  const elapsedPercent = Math.max(0, Math.min(100, raw));
-  const delta = percent - elapsedPercent;
-  return {
-    elapsedPercent,
-    delta,
-    state: delta > 10 ? 'over' : delta < -10 ? 'under' : 'on',
-  };
-}
-
-/**
  * 拉取并归一化一个账号的完整额度报告。
  *
  * 四个端点各自独立降级：单个端点失败只记进 `failures`，其余照常返回，因此一次
@@ -533,29 +494,6 @@ export async function fetchQuotaReport(options = {}) {
 
   const currentPeriodStart = stringOf(subData?.currentPeriodStart);
   const currentPeriodEnd = stringOf(subData?.currentPeriodEnd);
-  const now = Date.now();
-
-  /** Attach a pace block to one rolling window, deriving its open instant from its reset. */
-  const withPace = (window, spanMs) => {
-    if (window === undefined) return undefined;
-    const resetAt = window.resetAt;
-    return {
-      ...window,
-      pace:
-        resetAt === undefined || spanMs === undefined
-          ? undefined
-          : paceOf(window.percent, resetAt - spanMs, resetAt, now),
-    };
-  };
-
-  const monthlyPace = paceOf(
-    monthlyCap !== undefined && monthlyCap > 0 && usedCredits !== undefined
-      ? Math.min(100, (usedCredits / monthlyCap) * 100)
-      : undefined,
-    currentPeriodStart === undefined ? undefined : Date.parse(currentPeriodStart),
-    currentPeriodEnd === undefined ? undefined : Date.parse(currentPeriodEnd),
-    now,
-  );
 
   let projection;
   if (
@@ -612,10 +550,9 @@ export async function fetchQuotaReport(options = {}) {
       belowThreshold: creditData?.belowThreshold === true,
       creditThreshold: numberOf(creditData?.creditThreshold),
       periodBasis: stringOf(usage?.periodBasis),
-      pace: monthlyPace,
     },
-    fiveHour: withPace(parseWindow(windowLimits?.fiveHour), WINDOW_SPAN_MS.fiveHour),
-    weekly: withPace(parseWindow(windowLimits?.weekly), WINDOW_SPAN_MS.weekly),
+    fiveHour: parseWindow(windowLimits?.fiveHour),
+    weekly: parseWindow(windowLimits?.weekly),
     totals: {
       requests: numberOf(usage?.totalCount),
       successRate: numberOf(usage?.successRate),

@@ -90,14 +90,19 @@ function countdown(resetAt) {
 /**
  * One `/quota` output line for a credit window. Absent windows (pay-as-you-go
  * plans) produce no line at all rather than a placeholder.
+ *
+ * Money is printed for the monthly allowance only: the rolling windows are
+ * pass/fail limits, so their dollar figures would be noise — the same reason
+ * the card omits them.
  */
-function commandWindowLine(label, source, resetAt) {
+function commandWindowLine(label, source, resetAt, withMoney = false) {
   if (source === undefined || source === null) return undefined
   const percent = typeof source.percent === 'number' ? `${source.percent.toFixed(1)}% used` : 'usage unavailable'
-  const span = source.used !== undefined && source.cap !== undefined ? ` · ${money(source.used)} / ${money(source.cap)}` : ''
-  const pace = source.pace?.state === 'over' ? ' · over pace' : ''
+  const span = withMoney && source.used !== undefined && source.cap !== undefined
+    ? ` · ${money(source.used)} / ${money(source.cap)} · ${money(source.cap - source.used)} left`
+    : ''
   const reset = countdown(resetAt)
-  return `${label} ${percent}${span}${reset === undefined ? '' : ` · resets in ${reset}`}${pace}`
+  return `${label} ${percent}${span}${reset === undefined ? '' : ` · resets in ${reset}`}`
 }
 
 /**
@@ -115,7 +120,7 @@ function formatReportText(report) {
   const rows = [
     commandWindowLine('5-hour', report?.fiveHour, report?.fiveHour?.resetAt),
     commandWindowLine('Weekly', report?.weekly, report?.weekly?.resetAt),
-    commandWindowLine('Monthly', report?.monthly, periodEnd),
+    commandWindowLine('Monthly', report?.monthly, periodEnd, true),
   ].filter((line) => line !== undefined)
   if (rows.length === 0) {
     lines.push('No credit windows reported for this plan.')
