@@ -50,6 +50,8 @@ Command Code 的套餐便宜，但额度被拆成三个互相独立的窗口，�
 
 这也解释了"官网显示 100%、精确值其实是 99.84%"的现象：同一份数据，两种取整。如果哪天两边差得超过取整误差，说明口径出了问题——`已用 + 剩余 = 总额` 这个恒等式就是为了抓住这种情况。
 
+月度总额是**两个端点**的数字相加得来的。恰好跨计费周期或换套餐的那一瞬（每月几百毫秒的窗口），这两个数会分属两个周期，相加的结果看起来很正常、实际能差出几十个百分点。套餐的名义额度就是这个校验的标尺（真实总额与它只差零点几个百分点）；一旦读数没过这道校验，宿主会标 `capSuspect: true` 并且**不给任何百分比**，卡片显示原因而不是数字，下一次刷新自动校正。
+
 ## 环境要求
 
 - **DeepSeek Harness** `^0.1.5-rc.1`。插件依赖若干尚未稳定的框架内部接缝，见[兼容性](#兼容性)。
@@ -225,11 +227,15 @@ mkdir .devdeps && cd .devdeps
 npm init -y && npm install react@18 react-dom@18
 cd ..
 
-# 2. 离线测试 —— 88 项，不碰网络也不读真实凭据
-node tests/quota.test.mjs     # 15  路由发现、凭据顺序、套餐表
-node tests/host.test.mjs      # 20  路由注册、缓存新鲜度、并发去重、信封校验、/quota 命令
-node tests/client.test.mjs    # 35  插槽注册、注入面、版式规则、各渲染状态
-node tests/dynamic.test.mjs   # 18  账号变化中的数据不变量：漂移、重置、畸形响应
+# 2. 一次跑完全部 —— 98 项，一个结论，不碰网络也不读真实凭据
+node scripts/verify.mjs          # 加 --live 会额外打真实账号
+node scripts/verify.mjs --quiet  # 每个套件只打一行汇总
+
+#    它依次运行（也可单独跑）：
+#    tests/quota.test.mjs     15  路由发现、凭据顺序、套餐表
+#    tests/host.test.mjs      20  路由注册、缓存新鲜度、并发去重、信封校验、/quota
+#    tests/client.test.mjs    40  插槽注册、版式规则、各渲染状态、变化中的数值
+#    tests/dynamic.test.mjs   23  账号变化中的数据不变量：漂移、重置、跨周期读数、畸形响应
 
 # 3. 可选：确认没有凭据或本机路径被提交
 node scripts/audit.mjs

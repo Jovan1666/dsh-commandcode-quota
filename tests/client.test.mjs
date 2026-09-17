@@ -315,11 +315,25 @@ console.log('values that move')
   const rawIn = (html) => [...html.matchAll(/class="ccq-pct"[^>]*>([^<]*)</g)].map((match) => match[1])
 
   check('the countdown shrinks to 0m and never goes negative', () => {
-    const soon = renderReady({ ...GOAT, fiveHour: { ...GOAT.fiveHour, resetAt: Date.now() + 59 * 60_000 } })
+    // Mid-minute fixtures on purpose: a countdown computed with `floor` is
+    // asserted at 59.5 minutes, not at exactly 59, or a millisecond elapsing
+    // between building the fixture and rendering would read as 58m and the
+    // suite would flake once in a while.
+    const soon = renderReady({ ...GOAT, fiveHour: { ...GOAT.fiveHour, resetAt: Date.now() + 59.5 * 60_000 } })
     const passed = renderReady({ ...GOAT, fiveHour: { ...GOAT.fiveHour, resetAt: Date.now() - 90_000 } })
     assert.match(soon, /59m 后重置/)
     assert.match(passed, /0m 后重置/)
     assert.doesNotMatch(passed, /-\d+m 后重置/)
+  })
+
+  check('the countdown floors rather than rounds, at the unit boundary', () => {
+    const at = (minutes) => {
+      const html = renderReady({ ...GOAT, fiveHour: { ...GOAT.fiveHour, resetAt: Date.now() + minutes * 60_000 } })
+      return [...html.matchAll(/class="ccq-reset">([^<]*)</g)].map((match) => match[1])[0]
+    }
+    assert.equal(at(59.4), '59m 后重置', 'four seconds left of the minute is not a minute more')
+    assert.equal(at(60.5), '1h0m 后重置', 'and the hour rolls over exactly once')
+    assert.equal(at(61.5), '1h1m 后重置')
   })
 
   check('an exceeded window says so, and its percentage is clamped', () => {
@@ -384,6 +398,53 @@ console.log('values that move')
     assert.deepEqual(rawIn(html), ['16%', '7%', '100%'])
     assert.match(html, /\$70\.10 \/ \$70\.22/)
     assert.doesNotMatch(html, /\$68\.89/)
+  })
+
+  check('a straddled reading states no monthly figures and says why', () => {
+    // The host flags a read whose usage and credits describe different periods.
+    // The card must not render the mixed-instant sum as a fact — and must not
+    // leave a bare dash either, or the user cannot tell it apart from "no data".
+    const html = renderReady({
+      ...GOAT,
+      monthly: { used: 69.5, remaining: 69.6, cap: 139.1, percent: undefined, capSuspect: true },
+    }, true)
+    assert.deepEqual(percentagesIn(html), ['16%', '7%', '—'], 'the monthly row states no percentage')
+    assert.doesNotMatch(html, /\$69\.50 \/ \$139\.10/, 'the mixed-instant sum is not printed')
+    assert.doesNotMatch(html, /class="ccq-kv"/, 'and no money rows either')
+    assert.match(html, /本次读数跨了计费周期/)
+    assert.doesNotMatch(html, /139/, 'nowhere does the implausible cap surface')
+  })
+
+  check('a straddled monthly reading still leaves the rolling windows readable', () => {
+    const html = renderReady({
+      ...GOAT,
+      monthly: { used: 69.5, remaining: 69.6, cap: 139.1, percent: undefined, capSuspect: true },
+    })
+    assert.deepEqual(labelsIn(html), ['5 小时', '每周', '月度'])
+    assert.deepEqual(percentagesIn(html), ['16%', '7%', '—'])
+  })
+
+  check('the rail badge steps aside from a suspect monthly to the next tightest window', () => {
+    const rail = renderCard([false, {
+      phase: 'ready',
+      report: {
+        ...GOAT,
+        fiveHour: { ...GOAT.fiveHour, used: 13.02, percent: 93 },
+        monthly: { used: 69.5, remaining: 69.6, cap: 139.1, percent: undefined, capSuspect: true },
+      },
+    }], { wide: false })
+    assert.match(rail, /93%/, 'the 5-hour window is the tightest trustworthy one')
+    assert.doesNotMatch(rail, /—/, 'a badge cannot render a dash')
+  })
+
+  check('once the host stops flagging, the monthly figures come back', () => {
+    const html = renderReady({
+      ...GOAT,
+      monthly: { used: 69.5, remaining: 0.6, cap: 70.1, percent: 99.1, capSuspect: false },
+    }, true)
+    assert.match(html, /\$69\.50 \/ \$70\.10/)
+    assert.match(html, /剩余<\/span><span[^>]*>\$0\.60</)
+    assert.doesNotMatch(html, /本次读数跨了计费周期/)
   })
 
   check('a plan that stops reporting a window simply drops the row', () => {

@@ -499,6 +499,36 @@ export async function fetchQuotaReport(options = {}) {
       ? usedCredits + remainingCredits
       : (planInfo?.monthlyCredits ?? undefined);
 
+  /**
+   * Whether the derived monthly cap can be trusted.
+   *
+   * The cap is the sum of two figures from two different endpoints. Across a
+   * billing-period rollover or a plan change those two can belong to different
+   * periods — a few hundred milliseconds per month, but a real window, and the
+   * sum is then meaningless. A percentage computed from it would be wrong by
+   * tens of percent for the rest of that poll, and it would look perfectly
+   * plausible on screen.
+   *
+   * The plan's nominal allowance is the sanity check: proration and rounding
+   * move the real cap by well under a percent (GOAT reads 70.23 against a
+   * nominal 70), while a straddled boundary misses by far more than that. When
+   * the check fails the caller gets `capSuspect: true` and **no percentage at
+   * all** — the layer refuses to state a number it cannot stand behind, rather
+   * than leaving a wrong one for a consumer to render.
+   */
+  const CAP_TOLERANCE = 0.25;
+  const capSuspect = (() => {
+    const nominal = planInfo?.monthlyCredits;
+    if (nominal === undefined || nominal <= 0) return false;
+    if (monthlyCap === undefined || monthlyCap <= 0) return false;
+    const ratio = monthlyCap / nominal;
+    return ratio < 1 - CAP_TOLERANCE || ratio > 1 + CAP_TOLERANCE;
+  })();
+  const monthlyPercent =
+    !capSuspect && usedCredits !== undefined && monthlyCap !== undefined && monthlyCap > 0
+      ? Math.min(100, (usedCredits / monthlyCap) * 100)
+      : undefined;
+
   const currentPeriodStart = stringOf(subData?.currentPeriodStart);
   const currentPeriodEnd = stringOf(subData?.currentPeriodEnd);
 
@@ -548,10 +578,11 @@ export async function fetchQuotaReport(options = {}) {
       used: usedCredits,
       remaining: remainingCredits,
       cap: monthlyCap,
-      percent:
-        usedCredits !== undefined && monthlyCap !== undefined && monthlyCap > 0
-          ? Math.min(100, (usedCredits / monthlyCap) * 100)
-          : undefined,
+      percent: monthlyPercent,
+      // True when `used` and `remaining` cannot both describe the same instant
+      // (see the cap-plausibility note above). Consumers must not render the
+      // monthly figures as facts while this is set.
+      capSuspect,
       freeCredits: numberOf(creditData?.freeCredits),
       purchasedCredits: numberOf(creditData?.purchasedCredits),
       belowThreshold: creditData?.belowThreshold === true,

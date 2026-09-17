@@ -397,6 +397,60 @@ console.log('upstream payloads changing shape')
   })
 }
 
+console.log('a reading that straddles a billing boundary')
+{
+  await checkAsync('a normal read is trusted, including the vendor’s own rounding drift', async () => {
+    // GOAT's real cap drifts above its nominal $70 (proration, rounding): the
+    // live account has read 70.08 … 70.23 over one period. None of that may
+    // trip the plausibility check.
+    for (const cap of [70, 70.08, 70.22, 70.23, 69.5]) {
+      const r = await report(sample({ used: Math.min(cap, 61.8), remaining: cap - Math.min(cap, 61.8) }))
+      assert.equal(r.monthly.capSuspect, false, `cap ${cap} was flagged`)
+      assert.ok(r.monthly.percent > 0, `cap ${cap} lost its percentage`)
+    }
+  })
+
+  await checkAsync('usage from the old period plus credit from the new one is refused', async () => {
+    // The boundary race: usage/summary still reports the finished period
+    // ($69.50 spent) while billing/credits has already reset ($69.60 left). The
+    // sum looks like a $139 allowance and would render as an innocent 50%.
+    const r = await report(sample({ used: 69.5, remaining: 69.6 }))
+    assert.equal(r.monthly.capSuspect, true)
+    assert.equal(r.monthly.percent, undefined, 'no percentage may be stated from a mixed-instant sum')
+    assert.equal(r.monthly.used, 69.5, 'the raw figures are still reported')
+    assert.equal(r.monthly.remaining, 69.6)
+    assert.equal(r.monthly.cap, 139.1)
+  })
+
+  await checkAsync('a plan change mid-period is refused the same way', async () => {
+    // planId has already moved to Pro ($30 nominal) while the usage endpoint is
+    // still reporting the GOAT period's spend.
+    const r = await report(sample({ used: 69.5, remaining: 0.6, planId: 'individual-pro' }))
+    assert.equal(r.plan.name, 'Pro')
+    assert.equal(r.monthly.capSuspect, true)
+    assert.equal(r.monthly.percent, undefined)
+  })
+
+  await checkAsync('an unrecognised plan cannot be checked, so nothing is refused', async () => {
+    const r = await report(sample({ used: 69.5, remaining: 69.6, planId: 'individual-mystery' }))
+    assert.equal(r.plan.name, 'individual-mystery')
+    assert.equal(r.monthly.capSuspect, false, 'no nominal allowance to compare against')
+    assert.ok(r.monthly.percent > 0)
+  })
+
+  await checkAsync('the rolling windows are unaffected, since one endpoint serves them', async () => {
+    const straddling = sample({
+      used: 69.5,
+      remaining: 69.6,
+      fiveHour: { used: 13.9, cap: 14, exceeded: false, resetAt: Date.now() + HOUR },
+    })
+    const r = await report(straddling)
+    assert.equal(r.monthly.capSuspect, true)
+    assert.ok(r.fiveHour.percent > 99, 'the 5-hour window states its own numbers from its own endpoint')
+    assert.equal(r.fiveHour.used, 13.9)
+  })
+}
+
 console.log('an account with nothing configured')
 {
   await checkAsync('the absence marker is stable across repeated reads', async () => {

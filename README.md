@@ -51,6 +51,8 @@ Percentages are computed from the live API as `used ÷ (used + remaining)`, and 
 
 That is also why the dashboard can say `100%` while the precise share is `99.84%`: same data, two roundings. When the two ever differed by more than rounding, the meters would drift apart too — and the card's `used + remaining = cap` identity is asserted against the live API to catch that.
 
+The monthly cap is the sum of two figures from two endpoints. Across a billing-period rollover or a plan change those two can describe different periods — a window of a few hundred milliseconds a month — and the sum would then look plausible while being wrong by tens of percent. The plan's nominal allowance is the sanity check (the real cap stays within a fraction of a percent of it); when a read fails that check the host reports `capSuspect: true` and **no percentage at all**, and the card shows the reason instead of a number. It corrects itself on the next poll.
+
 ## Requirements
 
 - **DeepSeek Harness** `^0.1.5-rc.1` (dsh). The plugin uses private framework seams; see [Compatibility](#compatibility).
@@ -231,11 +233,15 @@ mkdir .devdeps && cd .devdeps
 npm init -y && npm install react@18 react-dom@18
 cd ..
 
-# 2. Offline tests — 88 checks, no network, no real credentials.
-node tests/quota.test.mjs     # 15  route discovery, credential order, plan table
-node tests/host.test.mjs      # 20  route registration, cache freshness, concurrency, envelope guards, /quota command
-node tests/client.test.mjs    # 35  slot registration, injected face, layout rules, render states
-node tests/dynamic.test.mjs   # 18  invariants while the account moves: drift, resets, broken payloads
+# 2. Everything at once — 98 checks, one verdict, no network, no real credentials.
+node scripts/verify.mjs          # add --live to also hit a real account
+node scripts/verify.mjs --quiet  # one summary line per suite
+
+#    ...which runs, individually:
+#    tests/quota.test.mjs     15  route discovery, credential order, plan table
+#    tests/host.test.mjs      20  route registration, cache freshness, concurrency, envelope guards, /quota
+#    tests/client.test.mjs    40  slot registration, layout rules, render states, moving values
+#    tests/dynamic.test.mjs   23  invariants while the account moves: drift, resets, straddled reads, bad payloads
 
 # 3. Optional: verify nothing credential-shaped or machine-specific is staged.
 node scripts/audit.mjs
