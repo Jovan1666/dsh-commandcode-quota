@@ -16,7 +16,7 @@ const mermaidDist = path.join(root, '.devdeps', 'node_modules', 'mermaid', 'dist
 /** Pull every ```mermaid block out of a README. */
 function mermaidBlocks(markdown) {
   const blocks = []
-  const pattern = /```mermaid\n([\s\S]*?)```/g
+  const pattern = /```mermaid\r?\n([\s\S]*?)```/g
   let match
   while ((match = pattern.exec(markdown)) !== null) blocks.push(match[1])
   return blocks

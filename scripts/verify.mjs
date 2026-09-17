@@ -28,6 +28,7 @@ const SUITES = [
   { label: 'host    (route, cache, concurrency)', file: 'tests/host.test.mjs' },
   { label: 'client  (rendering, boundaries)', file: 'tests/client.test.mjs' },
   { label: 'dynamic (drift, resets, bad payloads)', file: 'tests/dynamic.test.mjs' },
+  { label: 'cli     (arguments, exit codes)', file: 'tests/cli.test.mjs' },
   { label: 'audit   (credentials, host paths)', file: 'scripts/audit.mjs' },
 ]
 

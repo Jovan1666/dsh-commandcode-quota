@@ -206,17 +206,21 @@ function render(report, options) {
   const lines = [];
   const title = report.plan === undefined ? 'Command Code' : `Command Code · ${report.plan.name}（${report.plan.planId}）`;
   const who = report.account?.userName ?? report.account?.name ?? '';
-  lines.push(options.color ? `${BOLD}${title}${RESET}${' '.repeat(Math.max(1, 62 - title.length))}${who}` : `${title}${' '.repeat(Math.max(1, 62 - title.length))}${who}`);
+  // No right-aligned columns and no rule lines: both depend on character-cell
+  // widths, which differ between a terminal and a browser's code font — the
+  // README's own rendering of this output is a case in point, where a rule of 72
+  // Latin cells came out visibly shorter than a line containing CJK. Every line
+  // here stands on its own instead.
+  lines.push(options.color ? `${BOLD}${title}${RESET}${who === '' ? '' : ` · ${who}`}` : `${title}${who === '' ? '' : ` · ${who}`}`);
   if (report.credentialSource !== undefined) {
     lines.push(`${options.color ? DIM : ''}key: ${report.credentialSource}${options.color ? RESET : ''}`);
   }
-  lines.push('─'.repeat(72));
+  lines.push('');
 
   lines.push(...windowLine('5 小时', report.fiveHour, options));
   lines.push(...windowLine('每周', report.weekly, options));
   lines.push(...windowLine('月度额度', { ...report.monthly, resetAt: report.plan === undefined ? undefined : Date.parse(report.plan.currentPeriodEnd ?? '') }, options, true));
 
-  lines.push('─'.repeat(72));
   const totals = report.totals;
   lines.push(
     `本周期  ${totals.requests === undefined ? '—' : totals.requests.toLocaleString('en-US')} 请求 · 成功率 ${totals.successRate === undefined ? '—' : `${totals.successRate}%`} · in ${tokens(totals.tokensIn)} / out ${tokens(totals.tokensOut)} tokens`,

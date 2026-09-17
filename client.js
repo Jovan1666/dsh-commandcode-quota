@@ -63,6 +63,16 @@ window.__ModuleLoader__.load({
     const REVALIDATE_MS = 3_000
     /** Used percentage at which a window counts as "hot" for polling purposes. */
     const HOT_PERCENT = 85
+    /**
+     * Above this, a window is spent rather than approaching.
+     *
+     * Polling faster cannot change what the card would say: an exhausted
+     * allowance only moves when someone consumes credit, and the remaining
+     * movement is the reset, which the countdown already covers. Without this
+     * ceiling an account sitting at 99.8 % — a state that lasts for days near the
+     * end of a period — would poll every 15 seconds indefinitely.
+     */
+    const SPENT_PERCENT = 99.5
     /** Where to send someone who needs more credit. */
     const BILLING_URL = 'https://commandcode.ai/pricing'
 
@@ -99,8 +109,14 @@ window.__ModuleLoader__.load({
         subStatus: '订阅状态：{status}',
         billing: '查看套餐与额度',
         none: '该套餐未上报额度窗口',
+        degraded: '{count} 项数据这次没取到，稍后自动重试',
         retry: '点击重试',
         stale: '上次成功：{age}前',
+        errNetwork: '连不上 Command Code',
+        errAuth: 'API key 被拒绝了',
+        errRate: '请求太频繁，稍后自动重试',
+        errNotFound: '当前套餐不含 API 权限',
+        errGeneric: '读取失败',
       },
       en: {
         fiveHour: '5-hour',
@@ -120,8 +136,14 @@ window.__ModuleLoader__.load({
         subStatus: 'Subscription: {status}',
         billing: 'View plans and credits',
         none: 'this plan reports no credit windows',
+        degraded: '{count} reading(s) unavailable this time; retrying shortly',
         retry: 'click to retry',
         stale: 'last success {age} ago',
+        errNetwork: 'cannot reach Command Code',
+        errAuth: 'the API key was rejected',
+        errRate: 'too many requests; retrying shortly',
+        errNotFound: 'this plan has no API access',
+        errGeneric: 'could not read the account',
       },
     }
 
@@ -136,7 +158,8 @@ window.__ModuleLoader__.load({
   border-bottom:1px solid var(--dsw-alias-border-l1)}
 .ccq-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-size:13px;font-weight:600;line-height:18px}
-.ccq-plan{flex:none;padding:1px 6px;border-radius:6px;font-size:12px;line-height:16px;font-weight:500;
+.ccq-plan{flex:none;max-width:104px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  padding:1px 6px;border-radius:6px;font-size:12px;line-height:16px;font-weight:500;
   background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-tertiary)}
 .ccq-chevron{flex:none;color:var(--dsw-alias-label-caption);font-size:12px;line-height:18px;
   transition:transform 150ms ease}
@@ -309,9 +332,16 @@ window.__ModuleLoader__.load({
       return rows
     }
 
-    /** True when any reported window is close enough to its cap to poll faster. */
+    /**
+     * True when some window is close enough to its cap to poll faster.
+     *
+     * "Close to" excludes "past": see {@link SPENT_PERCENT}.
+     */
     function anyHot(report) {
-      return windowsOf(report).some((row) => (row.percent ?? 0) >= HOT_PERCENT)
+      return windowsOf(report).some((row) => {
+        const percent = percentOf(row.percent)
+        return percent !== undefined && percent >= HOT_PERCENT && percent < SPENT_PERCENT
+      })
     }
 
     /** On-demand balance, for accounts that buy credit instead of holding an allowance. */
@@ -340,6 +370,31 @@ window.__ModuleLoader__.load({
         return result.error.message
       }
       return 'unrecognized response'
+    }
+
+    /**
+     * Turn a host error message into something readable in a 200 px sidebar.
+     *
+     * The host's message is diagnostic — it names endpoints and status codes —
+     * which is right for a log and wrong for a card: a wall of stacked lines in a
+     * narrow column reads as a rendering bug. Known codes become one short line,
+     * the full text stays one hover away, and an unknown code falls back to the
+     * message itself, because a card that says nothing is worse than one that says
+     * something clumsy.
+     */
+    function errorText(message, t) {
+      const code = /^\[([A-Z_]+)\]/.exec(String(message ?? ''))?.[1]
+      const keys = {
+        NETWORK: 'errNetwork',
+        SERVICE: 'errNetwork',
+        AUTH: 'errAuth',
+        RATE_LIMIT: 'errRate',
+        NOT_FOUND: 'errNotFound',
+        BAD_RESPONSE: 'errGeneric',
+        MISSING_CREDENTIAL: 'errGeneric',
+      }
+      const key = keys[code]
+      return key === undefined ? String(message ?? '') : t(key)
     }
 
     /**
@@ -579,33 +634,52 @@ window.__ModuleLoader__.load({
 
       let body
       if (report === undefined) {
+        // The short line is what a user can act on; the host's own diagnostic
+        // message stays on the tooltip for whoever is debugging.
         body = [
-          h('div', { key: 'error', className: 'ccq-error' }, state.message),
+          h('div', { key: 'error', className: 'ccq-error', title: state.message }, errorText(state.message, t)),
           h('div', { key: 'hint', className: 'ccq-error' }, t('retry')),
         ]
       } else if (rows.length === 0) {
         body = [h('div', { key: 'none', className: 'ccq-note' }, t('none'))]
       } else {
+        const degraded = Array.isArray(report.failures) ? report.failures.length : 0
         body = [
           ...rows.map((row) => h(WindowRow, { key: row.key, row, t })),
           ...warningsOf(report, t).map((warning, index) => h('div', {
             key: `warn-${String(index)}`,
             className: 'ccq-warn',
           }, warning)),
-        ]
+          // A window that silently disappears because its endpoint failed is a
+          // bug the user would blame on their account. Say it happened.
+          degraded === 0 ? null : h('div', { key: 'degraded', className: 'ccq-note' }, format(t('degraded'), { count: degraded })),
+        ].filter((part) => part !== null)
+      }
+
+      const toggle = () => {
+        if (report === undefined) { refresh(); return }
+        setOpen((value) => !value)
       }
 
       return h('div', {
         className: `ccq-card${stale ? ' ccq-stale' : ''}`,
-        title: rows.length === 0 ? undefined : summaryTitle(rows, t),
-        onClick: () => {
-          if (report === undefined) { refresh(); return }
-          setOpen((value) => !value)
+        title: [rows.length === 0 ? undefined : summaryTitle(rows, t)]
+          .concat(report?.failures?.length > 0 ? [`⚠ ${report.failures.join(' · ')}`] : [])
+          .filter((part) => part !== undefined)
+          .join('\n'),
+        role: 'button',
+        tabIndex: 0,
+        'aria-expanded': report !== undefined && open,
+        onClick: toggle,
+        onKeyDown: (event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return
+          event.preventDefault()
+          toggle()
         },
       },
         h('div', { className: 'ccq-head' },
           h('span', { className: 'ccq-title' }, 'Command Code'),
-          h('span', { className: 'ccq-plan' }, planName),
+          h('span', { className: 'ccq-plan', title: planName }, planName),
           h('span', { className: `ccq-chevron${open ? ' ccq-open' : ''}` }, '▾'),
         ),
         ...body,

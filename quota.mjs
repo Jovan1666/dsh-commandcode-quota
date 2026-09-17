@@ -10,6 +10,7 @@
  * @module commandcode-quota/lib
  */
 
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -40,6 +41,29 @@ const KEY_ENV_PATTERN = /command_?code/i;
 
 /** 判定一个 baseURL 是否指向 Command Code 的官方 API。 */
 const COMMANDCODE_HOST_PATTERN = /(^|\/\/|\.)commandcode\.ai(\/|$)/i;
+
+/**
+ * A stable, non-reversible fingerprint of the credential in use.
+ *
+ * The snapshot on disk belongs to one account. If the key changes — the user
+ * switches plans, pastes a different key, or runs a second dsh against another
+ * account — a snapshot taken with the old key must not be shown as if it
+ * described the new one. The source string alone cannot tell those apart (it is
+ * the same `refs.NAME` either way), so the check uses a short digest of the key
+ * itself. A digest, not the key: it is stored next to the report it fingerprints
+ * and never leaves the host.
+ *
+ * @param {object} [options] same home/env anchors as {@link resolveApiKey}.
+ * @returns {string | undefined} hex digest, or undefined when no key resolves.
+ */
+export function credentialFingerprint(options = {}) {
+  try {
+    const { key } = resolveApiKey(options);
+    return createHash('sha256').update(key).digest('hex').slice(0, 16);
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Where the host half keeps its last good snapshot.
@@ -519,6 +543,16 @@ export async function fetchQuotaReport(options = {}) {
     const codes = failedStatuses;
     if (codes.length === 4 && codes.every((status) => status === 401 || status === 403)) {
       throw new QuotaError('AUTH', 'API key 被拒绝（401）：key 是否已失效或被重置？', { failures });
+    }
+    // A plan without API access answers 404 on all four endpoints. Reporting
+    // that as a network failure sends the user hunting for a connectivity
+    // problem that does not exist.
+    if (codes.length === 4 && codes.every((status) => status === 404)) {
+      throw new QuotaError(
+        'NOT_FOUND',
+        '当前套餐不含 API 权限：额度接口全部返回 404。Command Code 除 $1 的 Go 档外都含 API 权限。',
+        { failures },
+      );
     }
     if (codes.length === 4 && codes.every((status) => status >= 500)) {
       throw new QuotaError('SERVICE', 'Command Code 服务端异常（5xx），稍后重试。', { failures });

@@ -1,14 +1,18 @@
-# dsh-cc-quota bundle patch.
+# dsh-commandcode-quota bundle patch.
 #
 # Two ways to compose this plugin into a profile:
 #
-# 1. Add "dsh-cc-quota" to the profile package.json's dsh.profile.bundles list
-#    (this file is then resolved through the dsh.bundle.patch manifest field).
+# 1. Add "dsh-commandcode-quota" to the profile package.json's
+#    dsh.profile.bundles list (this file is then resolved through the
+#    dsh.bundle.patch manifest field).
 # 2. Or paste the insert block below into the profile's cordis.patch.yml.
 #
 # `name` must be the FULL package specifier exactly as installed in the
 # profile's node_modules, quoted (an unquoted scalar starting with `@` would
 # parse as a YAML indicator).
+#
+# `id` is the loader row's label. Keep it equal to the package name so that the
+# troubleshooting steps — `/plugins/<id>/client.js` — point at the same string.
 - insert:
-    - id: cc-quota
+    - id: commandcode-quota
       name: "dsh-commandcode-quota"
