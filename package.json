@@ -1,0 +1,37 @@
+{
+  "name": "dsh-commandcode-quota",
+  "version": "0.1.0",
+  "private": true,
+  "keywords": ["dsh", "dsh-plugin", "deepseek-harness", "commandcode", "command-code", "quota", "usage", "credits", "sidebar", "llm"],
+  "description": "Command Code plan quota panel for DeepSeek Harness: monthly / 5-hour / weekly credit windows with reset countdowns, above the sidebar Settings seat.",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "quota.mjs",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-connection"
+      ]
+    }
+  }
+}

@@ -1,0 +1,13 @@
+# Dependencies and generated artifacts.
+
+# Test-only React install (see README "Development").
+.devdeps/
+
+# Local scratch: the preview page and its screenshot are produced per run.
+preview/index.html
+preview/shot.png
+
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
