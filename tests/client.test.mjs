@@ -309,6 +309,89 @@ console.log('warnings')
   })
 }
 
+console.log('values that move')
+{
+  /** Percentages with nothing rounding them, for boundary assertions. */
+  const rawIn = (html) => [...html.matchAll(/class="ccq-pct"[^>]*>([^<]*)</g)].map((match) => match[1])
+
+  check('the countdown shrinks to 0m and never goes negative', () => {
+    const soon = renderReady({ ...GOAT, fiveHour: { ...GOAT.fiveHour, resetAt: Date.now() + 59 * 60_000 } })
+    const passed = renderReady({ ...GOAT, fiveHour: { ...GOAT.fiveHour, resetAt: Date.now() - 90_000 } })
+    assert.match(soon, /59m 后重置/)
+    assert.match(passed, /0m 后重置/)
+    assert.doesNotMatch(passed, /-\d+m 后重置/)
+  })
+
+  check('an exceeded window says so, and its percentage is clamped', () => {
+    const html = renderReady({ ...GOAT, fiveHour: { ...GOAT.fiveHour, exceeded: true, used: 15, cap: 14, percent: 107.1 } })
+    const row = html.slice(html.indexOf('ccq-win"'), html.indexOf('ccq-win"', html.indexOf('ccq-win"') + 1))
+    assert.match(row, /已超限/)
+    assert.doesNotMatch(row, /后重置/, 'an exceeded window counts up, not down')
+    // Defence in depth: the host clamps, the card clamps, and neither prints
+    // an impossible number.
+    assert.match(row, /ccq-pct[^>]*>100%</)
+    assert.doesNotMatch(html, /10[1-9]%/)
+  })
+
+  check('a window with no reported usage renders a dash, never a fabricated 0%', () => {
+    const html = renderReady({ ...GOAT, fiveHour: { used: undefined, cap: 14, exceeded: false, resetAt: NOW + HOUR } })
+    assert.deepEqual(rawIn(html), ['—', '7%', '98%'])
+    assert.doesNotMatch(html, />0%</)
+  })
+
+  check('the urgency colour flips exactly at 60% and 85%', () => {
+    const barsOf = (percent) => {
+      const html = renderReady({ ...GOAT, monthly: { ...GOAT.monthly, percent } })
+      return [...html.matchAll(/width:([\d.]+)%;background:var\(--dsw-alias-state-([a-z-]+)\)/g)]
+        .map((entry) => `${entry[1]} = ${entry[2]}`)
+    }
+    assert.ok(barsOf(59.9).includes('59.9 = success-primary'), `bars were ${barsOf(59.9).join(' | ')}`)
+    assert.ok(barsOf(60).includes('60 = warn-primary'), `bars were ${barsOf(60).join(' | ')}`)
+    assert.ok(barsOf(84.9).includes('84.9 = warn-primary'), `bars were ${barsOf(84.9).join(' | ')}`)
+    assert.ok(barsOf(85).includes('85 = error-primary'), `bars were ${barsOf(85).join(' | ')}`)
+  })
+
+  check('the headline rounds at the same boundary the dashboard does', () => {
+    const at = (percent) => rawIn(renderReady({ ...GOAT, monthly: { ...GOAT.monthly, percent } }))[2]
+    assert.equal(at(99.49), '99%')
+    assert.equal(at(99.5), '100%')
+    assert.equal(at(99.99), '100%')
+    assert.equal(at(0.4), '0%')
+    assert.equal(at(0.5), '1%')
+  })
+
+  check('an over-drawn allowance shows zero remaining, never a negative amount', () => {
+    const html = renderReady({ ...GOAT, monthly: { ...GOAT.monthly, used: 71.1, remaining: -0.88, cap: 70.22, percent: 101.2 } }, true)
+    assert.match(html, /剩余<\/span><span[^>]*>\$0\.00</)
+    assert.doesNotMatch(html, /\$-\d/)
+    assert.match(html, /100%/, 'and the percentage is clamped, not printed as 101%')
+  })
+
+  check('the rail badge follows whichever window is tightest as values change', () => {
+    const monthlyWorst = renderCard([false, { phase: 'ready', report: GOAT }], { wide: false })
+    assert.match(monthlyWorst, /98%/)
+    const fiveHourWorst = renderCard([false, {
+      phase: 'ready',
+      report: { ...GOAT, fiveHour: { ...GOAT.fiveHour, used: 13.86, percent: 99 } },
+    }], { wide: false })
+    assert.match(fiveHourWorst, /99%/, 'the 5-hour window is now the tightest')
+    assert.doesNotMatch(fiveHourWorst, /98%/)
+  })
+
+  check('a newer report replaces the older numbers outright', () => {
+    const later = { ...GOAT, monthly: { ...GOAT.monthly, used: 70.1, remaining: 0.12, cap: 70.22, percent: 99.8 } }
+    const html = renderReady(later, true)
+    assert.deepEqual(rawIn(html), ['16%', '7%', '100%'])
+    assert.match(html, /\$70\.10 \/ \$70\.22/)
+    assert.doesNotMatch(html, /\$68\.89/)
+  })
+
+  check('a plan that stops reporting a window simply drops the row', () => {
+    const html = renderReady({ ...GOAT, weekly: undefined })
+    assert.deepEqual(labelsIn(html), ['5 小时', '月度'])
+  })
+}
+
 console.log('states')
 {
   check('renders nothing before the first answer arrives', () => {

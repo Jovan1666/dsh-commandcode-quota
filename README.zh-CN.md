@@ -225,14 +225,31 @@ mkdir .devdeps && cd .devdeps
 npm init -y && npm install react@18 react-dom@18
 cd ..
 
-# 2. 离线测试 —— 56 项，不碰网络也不读真实凭据
+# 2. 离线测试 —— 88 项，不碰网络也不读真实凭据
 node tests/quota.test.mjs     # 15  路由发现、凭据顺序、套餐表
-node tests/host.test.mjs      # 15  路由注册、缓存、信封校验、/quota 命令
-node tests/client.test.mjs    # 26  插槽注册、注入面、版式规则、各渲染状态
+node tests/host.test.mjs      # 20  路由注册、缓存新鲜度、并发去重、信封校验、/quota 命令
+node tests/client.test.mjs    # 35  插槽注册、注入面、版式规则、各渲染状态
+node tests/dynamic.test.mjs   # 18  账号变化中的数据不变量：漂移、重置、畸形响应
 
 # 3. 可选：确认没有凭据或本机路径被提交
 node scripts/audit.mjs
 ```
+
+### 拿真实账号校验数字
+
+离线套件用的是构造序列，下面两个脚本校验真实数据：
+
+```sh
+# 一次性：打印 /quota 文本，并断言 已用 + 剩余 = 总额
+node preview/e2e-live.mjs
+
+# 动态校验：反复采样真实账号，断言数字在变化中依然自洽——跨字段恒等式、
+# 百分比由同一组数字重算、无 NaN、计数器单调不回退（周期切换或窗口重置
+# 是唯一合法的"变小"理由）
+node preview/e2e-watch.mjs 6 20      # 采样 6 次，间隔 20 秒
+```
+
+`e2e-watch` 一旦发现不变量被破坏就以非零码退出；如果这一轮什么都没变，它会**明说这一轮没证明到漂移**，而不是假装验过了。
 
 ### 不重启 dsh 也能预览卡片
 

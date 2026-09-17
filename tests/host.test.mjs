@@ -262,6 +262,102 @@ console.log('/quota when no Command Code provider is configured')
   })
 }
 
+console.log('freshness while the account keeps burning credit')
+{
+  const plugin = await loadHostHalf()
+  const calls = []
+  const state = { used: 67.68, requests: 17_641 }
+  globalThis.fetch = (url) => {
+    calls.push(url)
+    const pathname = new URL(url).pathname
+    if (pathname === '/alpha/usage/summary') {
+      return Promise.resolve(Response.json({
+        ...UPSTREAM[pathname],
+        totalCredits: state.used,
+        totalCount: state.requests,
+      }))
+    }
+    return Promise.resolve(Response.json(UPSTREAM[pathname]))
+  }
+
+  // Time travel: the route caches for 15s, so a test that wants to observe a
+  // refresh has to move the clock rather than sleep.
+  const realNow = Date.now
+  let clock = realNow()
+  Date.now = () => clock
+  try {
+    const { ctx, seen } = makeCtx()
+    plugin.apply(ctx)
+
+    const first = await callRoute(seen.route, 'cc-quota/report', {})
+    assert.equal(first.value.monthly.used, 67.68)
+    assert.equal(calls.length, 4)
+    check('the first read comes from upstream', () => {})
+
+    state.used = 68.4
+    state.requests = 17_700
+    clock += 5_000
+    const cached = await callRoute(seen.route, 'cc-quota/report', {})
+    check('inside the cache window the report is served unchanged, without new upstream calls', () => {
+      assert.equal(cached.value.monthly.used, 67.68, 'the cached value, not the drifted one')
+      assert.equal(calls.length, 4, 'no upstream request was made')
+    })
+
+    clock += 11_000
+    const refreshed = await callRoute(seen.route, 'cc-quota/report', {})
+    check('past the cache window the drifted numbers come through', () => {
+      assert.equal(refreshed.value.monthly.used, 68.4)
+      assert.equal(refreshed.value.totals.requests, 17_700)
+      assert.equal(calls.length, 8, 'one fresh read costs four upstream requests')
+      // The identity must hold on the refresh too: a drifted `used` with a
+      // stale `remaining` would silently move the percentage's denominator.
+      assert.ok(Math.abs(refreshed.value.monthly.used + refreshed.value.monthly.remaining - refreshed.value.monthly.cap) < 1e-9)
+    })
+  } finally {
+    Date.now = realNow
+  }
+}
+
+console.log('concurrent readers')
+{
+  // Two callers wanting a report at the same instant — the card polling and a
+  // /quota invocation, say. They must share one snapshot: a slow first read
+  // finishing after a fast second one would otherwise cache the older numbers
+  // and serve them for the next 15 seconds.
+  const plugin = await loadHostHalf()
+  const calls = []
+  let releaseSlow
+  const slowGate = new Promise((resolve) => { releaseSlow = resolve })
+  globalThis.fetch = async (url) => {
+    calls.push(url)
+    const pathname = new URL(url).pathname
+    // The first report's usage endpoint dawdles; everything after it is instant.
+    if (pathname === '/alpha/usage/summary' && calls.length <= 4) await slowGate
+    return Response.json(UPSTREAM[pathname])
+  }
+  const { ctx, seen } = makeCtx()
+  plugin.apply(ctx)
+
+  const both = Promise.all([
+    callRoute(seen.route, 'cc-quota/report', {}),
+    callRoute(seen.route, 'cc-quota/report', {}),
+  ])
+  await new Promise((resolve) => { setTimeout(resolve, 10) })
+  releaseSlow()
+  const [first, second] = await both
+
+  check('two simultaneous readers share one upstream read', () => {
+    assert.equal(calls.length, 4, 'four upstream requests total, not eight')
+    assert.deepEqual(first, second, 'and they receive the identical snapshot')
+  })
+
+  check('the shared snapshot is the one that got cached', async () => {
+    const after = await callRoute(seen.route, 'cc-quota/report', {})
+    assert.equal(after.value.monthly.used, 67.68)
+    assert.equal(calls.length, 4, 'still no further upstream work inside the cache window')
+  })
+}
+
 console.log('upstream failure')
 {
   const plugin = await loadHostHalf()

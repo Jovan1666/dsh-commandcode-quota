@@ -231,14 +231,34 @@ mkdir .devdeps && cd .devdeps
 npm init -y && npm install react@18 react-dom@18
 cd ..
 
-# 2. Offline tests — 56 checks, no network, no real credentials.
+# 2. Offline tests — 88 checks, no network, no real credentials.
 node tests/quota.test.mjs     # 15  route discovery, credential order, plan table
-node tests/host.test.mjs      # 15  route registration, cache, envelope guards, /quota command
-node tests/client.test.mjs    # 26  slot registration, injected face, layout rules, render states
+node tests/host.test.mjs      # 20  route registration, cache freshness, concurrency, envelope guards, /quota command
+node tests/client.test.mjs    # 35  slot registration, injected face, layout rules, render states
+node tests/dynamic.test.mjs   # 18  invariants while the account moves: drift, resets, broken payloads
 
 # 3. Optional: verify nothing credential-shaped or machine-specific is staged.
 node scripts/audit.mjs
 ```
+
+### Checking the numbers against a live account
+
+The offline suites use synthetic sequences. Two scripts check the real thing:
+
+```sh
+# One-shot: prints the /quota text and asserts used + remaining = cap.
+node preview/e2e-live.mjs
+
+# Drift check: sample a live account repeatedly and assert that the numbers stay
+# consistent while they move — the cross-field identity, the percentage
+# recomputed from the same figures, no NaN, and monotonic counters (with a
+# period change or a window reset accepted as the one legitimate way down).
+node preview/e2e-watch.mjs 6 20      # 6 samples, 20s apart
+```
+
+`e2e-watch` exits non-zero on the first broken invariant, and says so plainly when a run proved
+nothing — if the account was idle, it reports that the counters never moved instead of implying
+the drift was verified.
 
 ### Previewing the card without restarting dsh
 

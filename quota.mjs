@@ -385,16 +385,23 @@ async function getJson(url, headers, timeoutMs, fetchImpl) {
   }
 }
 
-/** 把 `{used, cap, exceeded, resetAt}` 归一成窗口对象。 */
+/**
+ * 把 `{used, cap, exceeded, resetAt}` 归一成窗口对象。
+ *
+ * 缺失的字段一律保持 `undefined`，**不补零**：一个厂商漏报 `used` 的窗口如果补成
+ * 0，卡片会显示"0% 已用"，等于告诉用户额度还很充裕——这是比不显示更糟的错。所以
+ * 百分比只在 `used` 真实上报且 `cap > 0` 时才算，两个数字都不可用时整个窗口当作
+ * 未上报。
+ */
 function parseWindow(block) {
   if (!isRecord(block)) return undefined;
   const used = numberOf(block.used);
   const cap = numberOf(block.cap);
   if (used === undefined && cap === undefined) return undefined;
   return {
-    used: used ?? 0,
-    cap: cap ?? 0,
-    percent: cap !== undefined && cap > 0 ? Math.min(100, ((used ?? 0) / cap) * 100) : undefined,
+    used,
+    cap,
+    percent: used !== undefined && cap !== undefined && cap > 0 ? Math.min(100, (used / cap) * 100) : undefined,
     exceeded: block.exceeded === true,
     resetAt: numberOf(block.resetAt),
   };
