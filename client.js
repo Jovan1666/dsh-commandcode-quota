@@ -78,6 +78,7 @@ window.__ModuleLoader__.load({
         monthly: '月度',
         left: '剩',
         remainingLabel: '剩余',
+        straddle: '本次读数跨了计费周期，下次刷新会校正',
         reset: '{time} 后重置',
         overLimit: '已超限',
         usedOf: '{label}已用',
@@ -98,6 +99,7 @@ window.__ModuleLoader__.load({
         monthly: 'Monthly',
         left: 'left',
         remainingLabel: 'Remaining',
+        straddle: 'this reading straddles a billing boundary; the next refresh corrects it',
         reset: 'resets in {time}',
         overLimit: 'over limit',
         usedOf: '{label} used',
@@ -289,6 +291,10 @@ window.__ModuleLoader__.load({
           remaining: used !== undefined && cap !== undefined ? Math.max(0, cap - used) : undefined,
           resetAt: key === 'monthly' ? periodEnd : source.resetAt,
           exceeded: source.exceeded === true,
+          // Set by the host when the two endpoints behind the monthly figures
+          // cannot both describe the same instant. The figures are forwarded
+          // as-is, but nothing built from them may be presented as fact.
+          capSuspect: key === 'monthly' && source.capSuspect === true,
         })
       }
       return rows
@@ -390,10 +396,11 @@ window.__ModuleLoader__.load({
       const color = levelToken(percent)
       const countdown = shortCountdown(row.resetAt)
       const tips = [
-        row.used !== undefined && row.cap !== undefined
+        row.capSuspect ? t('straddle') : undefined,
+        !row.capSuspect && row.used !== undefined && row.cap !== undefined
           ? `${format(t('usedOf'), { label: t(row.label) })} ${money(row.used)} / ${money(row.cap)}`
           : undefined,
-        row.remaining !== undefined ? `${t('left')} ${money(row.remaining)}` : undefined,
+        !row.capSuspect && row.remaining !== undefined ? `${t('left')} ${money(row.remaining)}` : undefined,
         // The exact reset instant stays one hover away even though the row chip
         // only carries the countdown.
         row.resetAt === undefined ? undefined : when(row.resetAt),
@@ -442,14 +449,15 @@ window.__ModuleLoader__.load({
     function detailRows(report, rows, t) {
       const body = []
       const monthly = rows.find((row) => row.key === 'monthly')
-      if (monthly !== undefined && monthly.used !== undefined && monthly.cap !== undefined) {
+      const trustMonthly = monthly !== undefined && monthly.capSuspect !== true
+      if (trustMonthly && monthly.used !== undefined && monthly.cap !== undefined) {
         body.push(h(Detail, {
           key: 'monthly-used',
           label: format(t('usedOf'), { label: t(monthly.label) }),
           value: `${money(monthly.used)} / ${money(monthly.cap)}`,
         }))
       }
-      if (monthly?.remaining !== undefined) {
+      if (trustMonthly && monthly?.remaining !== undefined) {
         body.push(h(Detail, {
           key: 'monthly-left',
           label: t('remainingLabel'),
@@ -458,6 +466,11 @@ window.__ModuleLoader__.load({
           // same colour as the monthly bar.
           tone: levelToken(percentOf(monthly.percent)),
         }))
+      }
+      if (monthly !== undefined && monthly.capSuspect === true) {
+        // Say why the numbers went away instead of leaving a bare dash: the
+        // read straddled a period boundary, and the next poll will fix it.
+        body.push(h('div', { key: 'straddle', className: 'ccq-note' }, t('straddle')))
       }
 
       const balance = balanceOf(report)
@@ -495,7 +508,9 @@ window.__ModuleLoader__.load({
     /** Tooltip / rail summary: the percentages, which are the card's own headline. */
     function summaryTitle(rows, t) {
       return rows
-        .map((row) => `${t(row.label)} ${percentText(row.percent)}${row.remaining === undefined ? '' : ` (${t('left')} ${money(row.remaining)})`}`)
+        .map((row) => (row.capSuspect
+          ? `${t(row.label)} ${t('straddle')}`
+          : `${t(row.label)} ${percentText(row.percent)}${row.remaining === undefined ? '' : ` (${t('left')} ${money(row.remaining)})`}`))
         .join(' · ')
     }
 

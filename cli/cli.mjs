@@ -180,6 +180,11 @@ function padLabel(text, width) {
 function windowLine(label, window, options, withMoney = false) {
   const heading = padLabel(label, LABEL_WIDTH);
   if (window === undefined) return [`${heading} 该账号未上报此窗口`];
+  // 跨计费周期的读数：两个端点描述的不是同一个时刻，拒绝给出任何数字。
+  if (withMoney && window.capSuspect === true) {
+    const reset = countdown(window.resetAt);
+    return [`${heading} ${' '.repeat(BAR_WIDTH + 2)}本次读数跨了计费周期${reset === undefined ? '' : `，${when(window.resetAt)} 重置（${reset}）`}`];
+  }
   const percent = window.percent;
   const span = withMoney ? ` · ${money(window.used)} / ${money(window.cap)}` : '';
   const head = `${heading} ${bar(percent, options.ascii, options.color)} ${percent === undefined ? '—' : `${percent.toFixed(1)}%`}${span}`;

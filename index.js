@@ -97,6 +97,12 @@ function countdown(resetAt) {
  */
 function commandWindowLine(label, source, resetAt, withMoney = false) {
   if (source === undefined || source === null) return undefined
+  // A read that straddles a billing boundary cannot state a percentage: the two
+  // endpoints behind it describe different periods.
+  if (withMoney && source.capSuspect === true) {
+    const reset = countdown(resetAt)
+    return `${label} reading straddles a billing boundary${reset === undefined ? '' : ` · resets in ${reset}`}`
+  }
   const percent = typeof source.percent === 'number' ? `${source.percent.toFixed(1)}% used` : 'usage unavailable'
   const span = withMoney && source.used !== undefined && source.cap !== undefined
     ? ` · ${money(source.used)} / ${money(source.cap)} · ${money(Math.max(0, source.cap - source.used))} left`
