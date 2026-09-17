@@ -7,6 +7,9 @@
 preview/index.html
 preview/shot.png
 
+# Marketplace submission payloads are working notes, not part of the plugin.
+.submission/
+
 node_modules/
 *.log
 .DS_Store
