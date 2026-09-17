@@ -137,15 +137,11 @@ node cli/cli.mjs --json       # 归一化 JSON，给脚本消费
 node cli/cli.mjs --help
 ```
 
-```
-Command Code · GOAT（individual-goat）                          Jovan1666
-────────────────────────────────────────────────────────────────────────
-月度额度   ███████████████████████████░ $69.26 / $70.22 · 98.6%
-           剩余 $0.96 · 09-25 17:08 重置（8 天 1 小时后）
-5 小时     ██████░░░░░░░░░░░░░░░░░░░░░░ $3.49 / $14.00 · 24.9%
-           剩余 $10.51 · 今天 16:55 重置（59m 后）
-每周       ███░░░░░░░░░░░░░░░░░░░░░░░░░ $3.63 / $35.00 · 10.4%
-           剩余 $31.37 · 09-24 01:51 重置（6 天 9 小时后）
+```text
+Command Code · GOAT · Jovan1666
+月度额度  已用 98.6%，剩 $0.96，09-25 17:08 重置
+5 小时    已用 24.9%，剩 $10.51，今天 16:55 重置
+每周      已用 10.4%，剩 $31.37，09-24 01:51 重置
 ```
 
 参数：`--json` / `--watch [秒]` / `--ascii` / `--color` / `--no-color` / `--base <url>` / `--timeout <ms>` / `--key <key>`。
@@ -171,19 +167,12 @@ Command Code · GOAT（individual-goat）                          Jovan1666
 
 ## 工作原理
 
-```
-┌─ 浏览器 ──────────────────────────────────────────────┐
-│ client.js  →  ctx.slots.register('sidebar.footer.action')
-│            →  ctx.connection.rpc.call('/api', 'cc-quota/report')
-└───────────────────────────┬───────────────────────────┘
-                            │ POST /api/cc-quota/report
-┌─ 宿主 ────────────────────┴───────────────────────────┐
-│ index.js   →  ctx.connection.fetch.register(...)      │
-│            →  15 秒缓存                                │
-│ quota.mjs  →  凭据发现 + 4 个 /alpha/* 端点            │
-└───────────────────────────┬───────────────────────────┘
-                            │ Bearer <key>
-                    api.commandcode.ai/alpha/*
+```mermaid
+flowchart TD
+  A["client.js — 注册进 sidebar.footer.action 插槽"] --> B["ctx.connection.rpc.call('/api', 'cc-quota/report')"]
+  B -->|"POST /api/cc-quota/report"| C["index.js — ctx.connection.fetch.register(...)，15 秒缓存"]
+  C --> D["quota.mjs — 解析凭据，然后读四个 /alpha/* 端点"]
+  D -->|"Bearer api key"| E["api.commandcode.ai/alpha/*"]
 ```
 
 | 文件 | 作用 |

@@ -1,0 +1,44 @@
+/**
+ * Reproduce how GitHub renders the README's CLI sample, to check whether the
+ * box-drawing columns survive the browser's monospace font stack.
+ *
+ * Run: node preview/check-blocks.mjs   then screenshot preview/blocks.html.
+ */
+
+import { readFileSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const here = path.dirname(fileURLToPath(import.meta.url))
+const root = path.dirname(here)
+
+/** Pull every fenced block out of a README. */
+function fencedBlocks(markdown) {
+  const blocks = []
+  const pattern = /```[a-z]*\n([\s\S]*?)```/g
+  let match
+  while ((match = pattern.exec(markdown)) !== null) blocks.push(match[1].replace(/\n$/, ''))
+  return blocks
+}
+
+const readme = readFileSync(path.join(root, 'README.md'), 'utf8')
+const blocks = fencedBlocks(readme).filter((block) => /[─█░]/.test(block))
+
+const html = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>code block check</title>
+<style>
+  body{margin:0;padding:16px;background:#fff;width:1000px}
+  h2{font:600 14px/1.4 -apple-system,'Segoe UI',sans-serif;margin:0 0 6px}
+  pre{
+    /* GitHub's code font stack, verbatim. */
+    font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:12px;line-height:1.45;margin:0 0 20px;padding:16px;background:#f6f8fa;
+    border-radius:6px;overflow-x:auto;white-space:pre;color:#1f2328;
+  }
+  .ruler{position:relative;height:0;border-top:1px dashed #d00;margin:-4px 0 20px}
+</style></head><body>
+${blocks.map((block, index) => `<h2>block ${String(index)} — ${String(block.split('\n').length)} lines</h2><pre>${block.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c])}</pre>`).join('\n')}
+</body></html>`
+
+writeFileSync(path.join(here, 'blocks.html'), html, 'utf8')
+console.log(`wrote preview/blocks.html with ${String(blocks.length)} block(s)`)

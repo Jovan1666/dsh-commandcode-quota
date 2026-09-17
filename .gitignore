@@ -3,9 +3,9 @@
 # Test-only React install (see README "Development").
 .devdeps/
 
-# Local scratch: the preview page and its screenshot are produced per run.
-preview/index.html
-preview/shot.png
+# Local scratch: the preview pages and their screenshots are produced per run.
+preview/*.html
+preview/*.png
 
 # Marketplace submission payloads are working notes, not part of the plugin.
 .submission/
