@@ -185,7 +185,9 @@ function windowLine(label, window, options, withMoney = false) {
   const head = `${heading} ${bar(percent, options.ascii, options.color)} ${percent === undefined ? '—' : `${percent.toFixed(1)}%`}${span}`;
   const reset = countdown(window.resetAt);
   const detail = [
-    withMoney ? `剩余 ${money(window.cap - window.used)}` : undefined,
+    // Clamped at zero like the card: an overdrawn allowance says "nothing
+    // left", not a negative amount that looks like a rendering bug.
+    withMoney ? `剩余 ${money(Math.max(0, window.cap - window.used))}` : undefined,
     reset === undefined ? undefined : `${when(window.resetAt)} 重置（${reset}）`,
     window.exceeded ? '已超限' : undefined,
   ]

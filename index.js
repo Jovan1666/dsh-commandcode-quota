@@ -99,7 +99,7 @@ function commandWindowLine(label, source, resetAt, withMoney = false) {
   if (source === undefined || source === null) return undefined
   const percent = typeof source.percent === 'number' ? `${source.percent.toFixed(1)}% used` : 'usage unavailable'
   const span = withMoney && source.used !== undefined && source.cap !== undefined
-    ? ` · ${money(source.used)} / ${money(source.cap)} · ${money(source.cap - source.used)} left`
+    ? ` · ${money(source.used)} / ${money(source.cap)} · ${money(Math.max(0, source.cap - source.used))} left`
     : ''
   const reset = countdown(resetAt)
   return `${label} ${percent}${span}${reset === undefined ? '' : ` · resets in ${reset}`}`
@@ -151,20 +151,28 @@ function formatReportText(report) {
 export function apply(ctx) {
   /** @type {{ at: number, report: unknown } | undefined} */
   let cache
+  /**
+   * The read currently in progress, if any.
+   *
+   * Two callers can want a report at the same moment — the card's poll and a
+   * `/quota` invocation, say. Without this, both would fetch, and the slower
+   * response would land last and overwrite the cache with the older snapshot,
+   * which is exactly the kind of quietly-wrong number a drifting account makes
+   * hard to spot. Joining the in-flight read keeps one snapshot per window and
+   * one upstream cost per snapshot.
+   *
+   * @type {Promise<object> | undefined}
+   */
+  let inFlight
 
   /**
-   * Serve the cached report, or fetch and cache a fresh one.
-   * @returns the RPC result for this call.
+   * Read once from upstream and cache the result.
+   * @returns the RPC result for this read; never throws.
    */
-  const report = async () => {
-    const now = Date.now()
-    if (cache !== undefined && now - cache.at < CACHE_MS) {
-      return { ok: true, value: cache.report }
-    }
-
+  const fetchOnce = async () => {
     try {
       const value = await fetchQuotaReport()
-      cache = { at: now, report: value }
+      cache = { at: Date.now(), report: value }
       return { ok: true, value }
     } catch (error) {
       const code = error !== null && typeof error === 'object' && 'code' in error ? String(error.code) : 'UNKNOWN'
@@ -185,6 +193,21 @@ export function apply(ctx) {
         },
       }
     }
+  }
+
+  /**
+   * Serve the cached report, or fetch and cache a fresh one.
+   * @returns the RPC result for this call.
+   */
+  const report = async () => {
+    const now = Date.now()
+    if (cache !== undefined && now - cache.at < CACHE_MS) {
+      return { ok: true, value: cache.report }
+    }
+    if (inFlight === undefined) {
+      inFlight = fetchOnce().finally(() => { inFlight = undefined })
+    }
+    return inFlight
   }
 
   /**

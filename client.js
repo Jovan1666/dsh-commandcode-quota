@@ -179,9 +179,10 @@ window.__ModuleLoader__.load({
         .reduce((text, [key, value]) => text.split(`{${key}}`).join(String(value)), String(template))
     }
 
-    /** Native colour token for a used percentage; unknown reads as the healthy level. */
+    /** Native colour token for a used percentage; unknown reads as neutral. */
     function levelToken(percent) {
-      const level = LEVELS.find((entry) => (percent === undefined ? 0 : percent) < entry.below)
+      if (percent === undefined) return 'var(--dsw-alias-label-caption)'
+      const level = LEVELS.find((entry) => percent < entry.below)
       return level === undefined ? LEVELS[LEVELS.length - 1].token : level.token
     }
 
@@ -189,8 +190,21 @@ window.__ModuleLoader__.load({
       return typeof value === 'number' && Number.isFinite(value) ? `$${value.toFixed(2)}` : '—'
     }
 
+    /**
+     * A percentage straight from the report, clamped into range.
+     *
+     * The host clamps too, but the card does not assume it: an over-drawn
+     * window must never render as "107%", and a nonsensical negative must never
+     * render as "-3%". The "over limit" chip carries that fact instead.
+     */
+    function percentOf(value) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+      return Math.max(0, Math.min(100, value))
+    }
+
     function percentText(value) {
-      return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(1)}%` : '—'
+      const clamped = percentOf(value)
+      return clamped === undefined ? '—' : `${clamped.toFixed(1)}%`
     }
 
     /**
@@ -200,7 +214,8 @@ window.__ModuleLoader__.load({
      * two roundings — and the card never disagrees with the website's number.
      */
     function headlinePercent(value) {
-      return typeof value === 'number' && Number.isFinite(value) ? `${Math.round(value)}%` : '—'
+      const clamped = percentOf(value)
+      return clamped === undefined ? '—' : `${Math.round(clamped)}%`
     }
 
     function tokens(value) {
@@ -267,7 +282,11 @@ window.__ModuleLoader__.load({
           percent,
           used,
           cap,
-          remaining: used !== undefined && cap !== undefined ? cap - used : undefined,
+          // Clamped at zero: the report keeps the vendor's raw figure, but a
+          // negative "remaining" reads as a rendering bug on a plan card. An
+          // overdrawn allowance is already saying "nothing left" through the
+          // red bar and the 100% headline.
+          remaining: used !== undefined && cap !== undefined ? Math.max(0, cap - used) : undefined,
           resetAt: key === 'monthly' ? periodEnd : source.resetAt,
           exceeded: source.exceeded === true,
         })
@@ -367,7 +386,7 @@ window.__ModuleLoader__.load({
 
     /** One credit window: label, percentage, the meter, and the reset chip. */
     function WindowRow({ row, t }) {
-      const percent = row.percent
+      const percent = percentOf(row.percent)
       const color = levelToken(percent)
       const countdown = shortCountdown(row.resetAt)
       const tips = [
@@ -381,6 +400,8 @@ window.__ModuleLoader__.load({
       ].filter((part) => part !== undefined)
       const fill = Math.max(0, Math.min(100, percent ?? 0))
       const chip = row.exceeded ? t('overLimit') : countdown === undefined ? undefined : format(t('reset'), { time: countdown })
+      // Each row carries its own tooltip: exact amounts, remaining credit, and
+      // the absolute reset instant, none of which cost a line in the sidebar.
       return h('div', { className: 'ccq-win', title: tips.join(' · ') },
         h('div', { className: 'ccq-winhead' },
           h('span', { className: 'ccq-winlabel' }, t(row.label)),
@@ -435,7 +456,7 @@ window.__ModuleLoader__.load({
           value: money(monthly.remaining),
           // The number that decides whether the month still works carries the
           // same colour as the monthly bar.
-          tone: levelToken(monthly.percent),
+          tone: levelToken(percentOf(monthly.percent)),
         }))
       }
 
