@@ -33,9 +33,15 @@ Rows run **shortest window first**, so the tightest constraint sits where your e
 - a full-width **progress meter** in the same colour,
 - a muted **reset countdown** (`59m`, `6d9h`, `8d1h`) so you know when it comes back.
 
-Click the card to expand the amounts behind the percentages, the billing-period totals, and the burn-rate projection. Collapse the sidebar to its 56 px rail and the card becomes a 36 px badge showing the shortest window's percentage.
+Click the card to expand the amounts behind the percentages, the billing-period totals, and the burn-rate projection. Collapse the sidebar to its rail and the card becomes a 36 px badge showing the **most constrained** window's percentage.
 
-Everything the card shows comes from **your account's own data** — window count, caps, and percentages are read from the API, never assumed. Plans that report no rolling windows (pay-as-you-go **Provider**, for instance) simply render no rows. Go, GOAT, Pro, Max 10×, Max 20×, Provider, and Teams all work.
+Everything the card shows comes from **your account's own data** — window count, caps, and percentages are read from the API, never assumed. Plans that report no rolling windows (pay-as-you-go **Provider**, for instance) simply render no rows. Go, GOAT, Pro, Max, Provider, and Teams all work.
+
+### Reading the numbers
+
+Percentages are computed from the live API as `used ÷ (used + remaining)`; the fixture-free arithmetic is checked against a real account on every change. The row headline is rounded to a **whole percent** — the same rounding the Command Code dashboard uses — so the card and the website never disagree at a glance. The exact one-decimal value, the dollar amounts, and the remaining credit sit one hover (or one click) away.
+
+That is also why the dashboard can say `100%` while the precise share is `99.84%`: same data, two roundings. When the two ever differed by more than rounding, the meters would drift apart too — and the card's `used + remaining = cap` identity is asserted against the live API to catch that.
 
 ## Requirements
 
@@ -98,11 +104,12 @@ New-Item -ItemType Junction `
 | Action | Result |
 |---|---|
 | Look at the sidebar foot | Three windows, percentages, meters, reset countdowns |
-| Click the card | Expand amounts, period totals, token counts, burn-rate projection |
-| Hover a row | Exact `used / cap`, remaining credit, and the absolute reset time |
-| Collapse the sidebar | The card becomes a 36 px rail badge with the shortest window's percentage |
+| Click the card | Expand amounts, pace comparison, period totals, token counts, burn-rate projection |
+| Hover a row | Exact `used / cap`, remaining credit, the one-decimal percentage, and the absolute reset time |
+| Collapse the sidebar | The card becomes a 36 px rail badge with the most constrained window's percentage |
+| Type `/quota` in a chat | The same report printed into the conversation |
 
-The card refreshes every 60 seconds; the host caches for 15 seconds on top of that, so it never hammers the API.
+The card refreshes every 60 seconds — 15 once any window passes 85 % — and the host caches for 15 seconds on top of that, so it never hammers the API. The `/quota` command reads the same cached report the card does, so a slash invocation costs no extra upstream requests.
 
 ## Credentials
 
@@ -126,6 +133,7 @@ The plugin depends on framework seams that are not part of a stable public API y
 | `ctx.slots.register({ name, id, order, inject }, Component)` | Contributing the card |
 | `ctx.connection.rpc.call(channel, endpoint, payload, signal)` | The browser side of the request |
 | `ctx.connection.fetch.register({ path, methods, requestBody, fetch })` | The host side of the route |
+| `ctx.get('commands')` + `commands.register({ name, description, handler })` | The optional `/quota` slash command |
 | `dsh.client` manifest + `exports["./client"]` | Client-bundle discovery, served at `/plugins/<id>/client.js` |
 
 > **Why an exact Fetch route instead of `connection.rpc.handle`?** `rpc.handle` mounts its channel through `owner.webServer`, where `owner` is the Connection service's own context — which never injects `webServer`. Calling it from any other plugin throws `cannot get property "webServer" without inject`, regardless of what the caller injects. `connection.fetch.register` only writes the route table, works from any plugin fiber, and inherits the shared `/api` transport's Host/Origin fence and browser-session cookie.

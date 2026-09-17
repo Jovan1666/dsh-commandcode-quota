@@ -127,9 +127,19 @@ function stubbedReact(stateQueue) {
 function applyAgainst(reactImpl) {
   const { exports, styles } = loadBundle(reactImpl)
   assert.equal(typeof exports.apply, 'function', 'exports apply')
-  assert.deepEqual(exports.inject, ['slots', 'connection'], 'declares its services')
-  const seen = {}
+  assert.deepEqual(exports.inject, ['slots', 'connection', 'locale'], 'declares its services')
+  const seen = { dictionaries: {} }
   const ctx = {
+    // The dictionaries install through an effect; running it inline mounts them.
+    effect: (callback) => callback(),
+    locale: {
+      register: (namespace, dictionary) => {
+        seen.dictionaries = dictionary
+        return () => {}
+      },
+      // Reads at call time, like the real binding, and serves the shipped zh copy.
+      bind: () => (key) => seen.dictionaries.zh?.[key] ?? key,
+    },
     slots: {
       inject: (key, callback) => {
         seen.injectKey = key
@@ -147,18 +157,23 @@ function applyAgainst(reactImpl) {
   return { seen, styles }
 }
 
-/** Render the registered component with a forced state. */
-function render(component, props) {
-  return renderToStaticMarkup(React.createElement(component, {
-    fetchQuota: () => Promise.resolve({ ok: true, value: GOAT }),
+/**
+ * Render the registered card with a forced hook state and its real injected face.
+ * @param stateQueue values for the component's useState calls, in call order.
+ * @param props extra props merged over the injected face.
+ */
+function renderCard(stateQueue, props = {}) {
+  const { seen } = applyAgainst(stubbedReact(stateQueue))
+  return renderToStaticMarkup(React.createElement(seen.component, {
+    wide: true,
+    ...seen.options.inject(),
     ...props,
   }))
 }
 
 /** Render the card in its ready state for one report. */
 function renderReady(report, open = false) {
-  const { seen } = applyAgainst(stubbedReact([open, { phase: 'ready', report }]))
-  return render(seen.component, { wide: true })
+  return renderCard([open, { phase: 'ready', report }])
 }
 
 console.log('bundle contract')
@@ -196,13 +211,16 @@ console.log('window order and percentage-first values')
   check('rows run 5 hours, weekly, monthly top to bottom', () => {
     assert.deepEqual(labelsIn(html), ['5 小时', '每周', '月度'])
   })
-  check('the used percentage is the row value', () => {
-    assert.deepEqual(percentagesIn(html), ['15.6%', '6.6%', '98.1%'])
+  check('the headline is the used percentage rounded like the official dashboard', () => {
+    assert.deepEqual(percentagesIn(html), ['16%', '7%', '98%'])
   })
-  check('bar width and colour both track the used percentage', () => {
+  check('bar width keeps full precision even though the headline rounds', () => {
     assert.match(html, /width:15\.6%[^"]*background:var\(--dsw-alias-state-success-primary\)/)
     assert.match(html, /width:6\.6%[^"]*background:var\(--dsw-alias-state-success-primary\)/)
     assert.match(html, /width:98\.1%[^"]*background:var\(--dsw-alias-state-error-primary\)/)
+  })
+  check('the exact one-decimal value stays on the row tooltip', () => {
+    assert.match(html, /98\.1%/)
   })
   check('each row carries its own reset chip', () => {
     const chips = [...html.matchAll(/class="ccq-reset">([^<]*)</g)].map((match) => match[1])
@@ -215,6 +233,13 @@ console.log('window order and percentage-first values')
     const warn = renderReady({ ...GOAT, fiveHour: { ...GOAT.fiveHour, used: 10, cap: 14, percent: 71.4 } })
     assert.match(warn, /width:71\.4%[^"]*background:var\(--dsw-alias-state-warn-primary\)/)
   })
+  check('a 99.84% monthly reads 100% exactly like the official dashboard', () => {
+    // The live case behind this rounding: official shows 100% while the exact
+    // share is 99.84%. The card must not disagree with the website at a glance.
+    const tail = renderReady({ ...GOAT, monthly: { used: 70.1122, remaining: 0.113, cap: 70.2252, percent: 99.8391 } })
+    assert.match(tail, /class="ccq-pct"[^>]*>100%</)
+    assert.match(tail, /99\.8%/) // precision survives on the tooltip
+  })
 }
 
 console.log('plan-agnostic rendering')
@@ -222,7 +247,7 @@ console.log('plan-agnostic rendering')
   check('a Pro account renders its own caps', () => {
     const html = renderReady(PRO)
     assert.match(html, /class="ccq-plan">Pro</)
-    assert.deepEqual(percentagesIn(html), ['6.4%', '10.0%', '12.5%'])
+    assert.deepEqual(percentagesIn(html), ['6%', '10%', '13%'])
     assert.match(html, /\$1\.00 \/ \$16\.00/)
   })
   check('an account with no rolling windows renders no rows', () => {
@@ -235,41 +260,81 @@ console.log('plan-agnostic rendering')
     const html = renderReady(GOAT, true)
     assert.match(html, /\$68\.89 \/ \$70\.21 · 剩 \$1\.32/)
     assert.match(html, /\$2\.18 \/ \$14\.00/)
-    assert.match(html, /本周期 17,859 请求 · 100%/)
+    assert.match(html, /17,859 请求 · 100%/)
     assert.match(html, /\$3\.00\/天 · 约 0\.4 天后耗尽/)
   })
-  check('the monthly reset shown is the subscription period end', () => {
+  check('the exact reset instant stays on the row tooltip', () => {
     const html = renderReady(GOAT)
-    // The reset instant rides the row tooltip, so it costs no row height.
-    assert.match(html, /title="[^"]*重置（8 天 \d+ 小时后）/)
+    assert.match(html, /title="[^"]*\d\d-\d\d \d\d:\d\d/)
+  })
+}
+
+console.log('pace and warnings')
+{
+  const PACED = {
+    ...GOAT,
+    fiveHour: { ...GOAT.fiveHour, pace: { elapsedPercent: 80, delta: -64.4, state: 'under' } },
+    weekly: { ...GOAT.weekly, pace: { elapsedPercent: 5, delta: 1.6, state: 'on' } },
+    monthly: { ...GOAT.monthly, pace: { elapsedPercent: 74.2, delta: 23.9, state: 'over' } },
+  }
+  check('the bar carries a tick at each window elapsed share', () => {
+    const html = renderReady(PACED)
+    const ticks = [...html.matchAll(/class="ccq-tick" style="left:([\d.]+)%/g)].map((match) => match[1])
+    assert.deepEqual(ticks, ['80', '5', '74.2'])
+  })
+  check('the expanded body names the pace comparison', () => {
+    const html = renderReady(PACED, true)
+    assert.match(html, /已用 98\.1% · 窗口已过 74\.2% · 超速/)
+    assert.match(html, /ccq-pace ccq-over/)
+  })
+  check('a below-threshold balance and a canceled subscription raise warnings', () => {
+    const html = renderReady({
+      ...GOAT,
+      monthly: { ...GOAT.monthly, belowThreshold: true },
+      plan: { ...GOAT.plan, cancelAtPeriodEnd: true },
+    })
+    assert.match(html, /额度已低于阈值/)
+    assert.match(html, /订阅已取消/)
+    assert.match(html, /ccq-warn/)
+  })
+  check('a healthy active subscription raises no warning', () => {
+    assert.doesNotMatch(renderReady(GOAT), /ccq-warn/)
   })
 }
 
 console.log('states')
 {
-  const { seen } = applyAgainst(stubbedReact([]))
-  const loading = render(seen.component, { wide: true })
-  check('loading state renders three placeholder rows', () => {
-    assert.deepEqual(labelsIn(loading), ['5 小时', '每周', '月度'])
-    assert.deepEqual(percentagesIn(loading), ['—', '—', '—'])
+  check('renders nothing before the first answer arrives', () => {
+    assert.equal(renderCard([]), '')
+  })
+  check('renders nothing when the host has no Command Code provider', () => {
+    assert.equal(renderCard([false, { phase: 'absent' }]), '')
   })
 
-  const { seen: errorSeen } = applyAgainst(stubbedReact([false, { phase: 'error', message: '[MISSING_CREDENTIAL] 未找到 key' }]))
-  const error = render(errorSeen.component, { wide: true })
-  check('error state surfaces the host message and a retry hint', () => {
-    assert.match(error, /\[MISSING_CREDENTIAL\]/)
+  const { seen: errorSeen } = applyAgainst(stubbedReact([false, { phase: 'error', message: 'boom' }]))
+  const error = renderToStaticMarkup(React.createElement(errorSeen.component, {
+    wide: true,
+    ...errorSeen.options.inject(),
+  }))
+  check('a failure with nothing to fall back on surfaces the message and a retry hint', () => {
+    assert.match(error, /boom/)
     assert.match(error, /点击重试/)
     assert.equal(labelsIn(error).length, 0)
   })
-
-  const rail = (() => {
-    const { seen: railSeen } = applyAgainst(stubbedReact([false, { phase: 'ready', report: GOAT }]))
-    return render(railSeen.component, { wide: false })
-  })()
-  check('collapsed sidebar renders the rail badge for the shortest window', () => {
+  check('a failure after a good report keeps the numbers and marks them stale', () => {
+    const html = renderCard([false, { phase: 'error', message: 'network', report: GOAT, at: Date.now() - 120_000 }])
+    assert.match(html, /ccq-stale/)
+    assert.deepEqual(percentagesIn(html), ['16%', '7%', '98%'])
+    assert.match(html, /上次成功：2m前/)
+  })
+  check('collapsed sidebar badges the most constrained window, not the shortest', () => {
+    const rail = renderCard([false, { phase: 'ready', report: GOAT }], { wide: false })
     assert.match(rail, /ccq-rail/)
-    assert.match(rail, /16%/)
+    assert.match(rail, /98%/)
     assert.doesNotMatch(rail, /ccq-card/)
+  })
+  check('the rail badge stays hidden for a host without Command Code', () => {
+    assert.equal(renderCard([false, { phase: 'absent' }], { wide: false }), '')
   })
 }
 

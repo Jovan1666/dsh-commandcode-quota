@@ -1,7 +1,8 @@
 /**
  * dsh-cc-quota host half: one exact Fetch route on Connection's shared `/api`
  * transport that serves the Command Code account quota report to this plugin's
- * browser half.
+ * browser half, plus an optional `/quota` slash command that prints the same
+ * report into a conversation.
  *
  * The browser cannot call Command Code itself — the API key lives on the host
  * and the Provider API is not browser-CORS reachable — so the panel asks the
@@ -25,7 +26,6 @@ export const name = 'commandcode-quota'
 
 /** The exact Fetch registry lives on the host Connection service. */
 export const inject = ['connection']
-
 /** Shared browser transport; routes under it inherit its fence and session. */
 const CHANNEL = '/api'
 
@@ -63,6 +63,76 @@ function failure(rpcId, code, message, details = {}) {
   return envelope(rpcId, { ok: false, error: { code, message, details } })
 }
 
+/** Compact money text for the `/quota` command output. */
+function money(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? `$${value.toFixed(2)}` : '—'
+}
+
+/** Short token counts (`3.49B`) for the `/quota` command output. */
+function shortTokens(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
+  if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`
+  if (value >= 1e6) return `${(value / 1e6).toFixed(2)}M`
+  if (value >= 1e3) return `${(value / 1e3).toFixed(1)}K`
+  return String(value)
+}
+
+/** Human countdown to a reset instant, coarse enough to stay stable in chat. */
+function countdown(resetAt) {
+  if (typeof resetAt !== 'number' || !Number.isFinite(resetAt)) return undefined
+  const minutes = Math.floor((resetAt - Date.now()) / 60_000)
+  if (minutes <= 0) return 'now'
+  if (minutes < 60) return `${minutes}m`
+  if (minutes < 1_440) return `${Math.floor(minutes / 60)}h${minutes % 60}m`
+  return `${Math.floor(minutes / 1_440)}d${Math.floor((minutes % 1_440) / 60)}h`
+}
+
+/**
+ * One `/quota` output line for a credit window. Absent windows (pay-as-you-go
+ * plans) produce no line at all rather than a placeholder.
+ */
+function commandWindowLine(label, source, resetAt) {
+  if (source === undefined || source === null) return undefined
+  const percent = typeof source.percent === 'number' ? `${source.percent.toFixed(1)}% used` : 'usage unavailable'
+  const span = source.used !== undefined && source.cap !== undefined ? ` · ${money(source.used)} / ${money(source.cap)}` : ''
+  const pace = source.pace?.state === 'over' ? ' · over pace' : ''
+  const reset = countdown(resetAt)
+  return `${label} ${percent}${span}${reset === undefined ? '' : ` · resets in ${reset}`}${pace}`
+}
+
+/**
+ * Render the normalized report as the `/quota` command's chat text.
+ *
+ * Plain lines on purpose: chat surfaces wrap freely, so nothing here depends
+ * on column alignment (the lesson the README's CLI block learned the hard way).
+ */
+function formatReportText(report) {
+  const lines = []
+  const plan = report?.plan
+  lines.push(`Command Code · ${plan?.name ?? plan?.planId ?? 'account'}${plan?.status === undefined ? '' : ` (${plan.status})`}`)
+
+  const periodEnd = plan?.currentPeriodEnd === undefined ? undefined : Date.parse(plan.currentPeriodEnd)
+  const rows = [
+    commandWindowLine('5-hour', report?.fiveHour, report?.fiveHour?.resetAt),
+    commandWindowLine('Weekly', report?.weekly, report?.weekly?.resetAt),
+    commandWindowLine('Monthly', report?.monthly, periodEnd),
+  ].filter((line) => line !== undefined)
+  if (rows.length === 0) {
+    lines.push('No credit windows reported for this plan.')
+  } else {
+    lines.push(...rows)
+  }
+
+  const totals = report?.totals
+  if (totals?.requests !== undefined) {
+    lines.push(`${totals.requests.toLocaleString('en-US')} requests · ${totals.successRate ?? '—'}% success · in ${shortTokens(totals.tokensIn)} / out ${shortTokens(totals.tokensOut)}`)
+  }
+  if (report?.failures?.length > 0) {
+    lines.push(`Degraded endpoints: ${report.failures.join('; ')}`)
+  }
+  return lines.join('\n')
+}
+
 /**
  * Register the quota route on the host Connection service.
  *
@@ -93,6 +163,14 @@ export function apply(ctx) {
       return { ok: true, value }
     } catch (error) {
       const code = error !== null && typeof error === 'object' && 'code' in error ? String(error.code) : 'UNKNOWN'
+      // Nothing on this machine points at Command Code, so the plugin has no job
+      // here. This travels as a *successful* response carrying a marker rather
+      // than an RPC error: the transport's error schema is a discriminated union
+      // of known codes, so an invented code fails the browser's validation and
+      // surfaces as a transport failure — the opposite of hiding.
+      if (code === 'MISSING_CREDENTIAL' && error.configured === false) {
+        return { ok: true, value: { configured: false, reason: 'no-commandcode-provider' } }
+      }
       return {
         ok: false,
         error: {
@@ -124,10 +202,10 @@ export function apply(ctx) {
     const message = body !== null && typeof body === 'object' ? body : undefined
     const rpcId = typeof message?.rpcId === 'string' ? message.rpcId : 'invalid-request'
     if (message?.type !== 'client-request' || typeof message.method !== 'string') {
-      return failure(rpcId, 'gateway/bad-request', 'invalid client-request message', { issues: [] })
+      return failure(rpcId, 'bad-request', 'invalid client-request message', { issues: [] })
     }
     if (message.method !== ENDPOINT) {
-      return failure(rpcId, 'gateway/bad-request', `method ${JSON.stringify(message.method)} does not match endpoint ${JSON.stringify(ENDPOINT)}`, { issues: [] })
+      return failure(rpcId, 'bad-request', `method ${JSON.stringify(message.method)} does not match endpoint ${JSON.stringify(ENDPOINT)}`, { issues: [] })
     }
 
     return envelope(rpcId, await report())
@@ -140,5 +218,41 @@ export function apply(ctx) {
     fetch: serve,
   })
 
+  registerQuotaCommand(ctx, report)
+
   ctx.logger.info(`cc-quota: serving quota reports on ${ROUTE_PATH}`)
+}
+
+/**
+ * Register the optional `/quota` slash command on the human-command registry.
+ *
+ * `commands` is deliberately *not* declared in `inject`: it is an optional
+ * service here (the card works in profiles that compose no command runtime),
+ * and the repo convention is `ctx.get(name)` for exactly that. The handler
+ * reuses the route's cached `report()` so a slash invocation never costs more
+ * upstream requests than the card would have spent anyway.
+ *
+ * @param ctx - host plugin context.
+ * @param report - the cached report producer shared with the Fetch route.
+ */
+function registerQuotaCommand(ctx, report) {
+  const commands = ctx.get('commands')
+  if (commands === undefined) {
+    ctx.logger.info('cc-quota: no command runtime composed; /quota not registered')
+    return
+  }
+  ctx.effect(() => commands.register({
+    name: 'quota',
+    description: 'Show Command Code plan credit usage',
+    handler: async () => {
+      const result = await report()
+      if (!result.ok) {
+        return { kind: 'error', text: result.error.message }
+      }
+      if (result.value !== null && typeof result.value === 'object' && result.value.configured === false) {
+        return { kind: 'error', text: 'No Command Code provider is configured on this host.' }
+      }
+      return { kind: 'success', text: formatReportText(result.value) }
+    },
+  }), 'cc-quota: /quota command')
 }

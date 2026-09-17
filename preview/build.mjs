@@ -108,9 +108,9 @@ const REPORT = {
     currentPeriodStart: new Date(Date.now() - 22.9 * 86_400_000).toISOString(),
     currentPeriodEnd: new Date(Date.now() + 8.1 * 86_400_000).toISOString(),
   },
-  monthly: { used: 69.26, remaining: 0.96, cap: 70.22, percent: 98.6, freeCredits: 0, purchasedCredits: 0, periodBasis: 'billing-period' },
-  fiveHour: { used: 3.49, cap: 14, percent: 24.9, exceeded: false, resetAt: Date.now() + 3_600_000 },
-  weekly: { used: 3.63, cap: 35, percent: 10.4, exceeded: false, resetAt: Date.now() + 6.4 * 86_400_000 },
+  monthly: { used: 69.26, remaining: 0.96, cap: 70.22, percent: 98.6, freeCredits: 0, purchasedCredits: 0, periodBasis: 'billing-period', belowThreshold: true, pace: { elapsedPercent: 74.2, delta: 24.4, state: 'over' } },
+  fiveHour: { used: 3.49, cap: 14, percent: 24.9, exceeded: false, resetAt: Date.now() + 3_600_000, pace: { elapsedPercent: 80, delta: -55.1, state: 'under' } },
+  weekly: { used: 3.63, cap: 35, percent: 10.4, exceeded: false, resetAt: Date.now() + 6.4 * 86_400_000, pace: { elapsedPercent: 9, delta: 1.4, state: 'on' } },
   totals: { requests: 17_928, successRate: 100, tokensIn: 3_410_000_000, tokensOut: 16_600_000 },
   projection: { elapsedDays: 22.9, totalDays: 31, dailyRate: 3.02, runsOutInDays: 0.3 },
   failures: [],
@@ -177,7 +177,14 @@ const html = `<!doctype html>
     if (name === 'react') return React
     throw new Error('unexpected require: ' + name)
   })
+  const dictionaries = {}
   mod.apply({
+    // The dictionaries install through an effect; running it inline mounts them.
+    effect: (callback) => callback(),
+    locale: {
+      register: (namespace, dictionary) => { dictionaries[namespace] = dictionary; return () => {} },
+      bind: (namespace) => (key) => (dictionaries[namespace] || {}).zh[key] || key,
+    },
     slots: {
       inject: (_key, callback) => callback(),
       register: (options, component) => { contributed = { options, component }; return () => {} },
@@ -189,7 +196,7 @@ const html = `<!doctype html>
     const mount = document.querySelector('[data-mount="' + id + '"]')
     const wide = id !== 'light'
     ReactDOM.createRoot(mount).render(
-      React.createElement(contributed.component, { wide, fetchQuota: fetched })
+      React.createElement(contributed.component, Object.assign({ wide }, contributed.options.inject()))
     )
   }
 

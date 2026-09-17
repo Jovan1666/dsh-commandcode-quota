@@ -302,6 +302,7 @@ export function resolveApiKey(options = {}) {
   };
 
   // 2. 跟随用户自己的 provider 配置。
+  let sawCommandCodeRoute = false;
   for (const file of settingsFiles) {
     let text;
     try {
@@ -311,6 +312,7 @@ export function resolveApiKey(options = {}) {
       continue;
     }
     for (const route of discoverRoutes(text)) {
+      sawCommandCodeRoute = true;
       if (route.apiKey !== undefined) {
         return { key: route.apiKey, source: `${file} → provider apiKey`, apiBase: originOf(route.baseURL) };
       }
@@ -343,8 +345,11 @@ export function resolveApiKey(options = {}) {
 
   throw new QuotaError(
     'MISSING_CREDENTIAL',
-    '未找到 Command Code API key。把 Command Code 配成 DSH 的 provider（设置 → Models）即可自动识别，'
-    + `或设置 COMMANDCODE_API_KEY 环境变量，或在 ${path.join(dshHome, '.credentials.yaml')} 写入 refs.<NAME>。`,
+    '未找到 Command Code API key。把 Command Code 配成 DSH 的 provider（设置 → Models）即可自动识别，或设置 COMMANDCODE_API_KEY 环境变量。',
+    // Nothing on this machine points at Command Code: the plugin is simply not
+    // applicable here, and the caller hides the card instead of showing an
+    // error. A discovered route with an unresolvable key stays `configured`.
+    { configured: sawCommandCodeRoute },
   );
 }
 
@@ -392,6 +397,45 @@ function parseWindow(block) {
     percent: cap !== undefined && cap > 0 ? Math.min(100, ((used ?? 0) / cap) * 100) : undefined,
     exceeded: block.exceeded === true,
     resetAt: numberOf(block.resetAt),
+  };
+}
+
+/**
+ * Nominal span of each rolling window. The API reports when a window resets but
+ * not when it opened, and Command Code's windows roll from first use, so the
+ * open instant is the reset minus this span.
+ */
+const WINDOW_SPAN_MS = Object.freeze({
+  fiveHour: 5 * 3_600_000,
+  weekly: 7 * 86_400_000,
+});
+
+/**
+ * Compare how much of a window is spent against how much of it has elapsed.
+ *
+ * This is deliberately preferred over extrapolating a rate: credit burn is
+ * bursty, so a projected exhaustion time swings wildly, while two cumulative
+ * shares measured over the same window stay comparable. `state` answers the
+ * only question that matters — at this pace, does the window run out before it
+ * resets?
+ *
+ * @param percent - used percentage, or undefined when the host reported none.
+ * @param start - window open instant in epoch milliseconds.
+ * @param end - window reset instant in epoch milliseconds.
+ * @param now - current instant, injected so callers and tests agree.
+ * @returns the pace block, or undefined when either instant is unusable.
+ */
+function paceOf(percent, start, end, now) {
+  if (percent === undefined || start === undefined || end === undefined) return undefined;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return undefined;
+  const raw = ((now - start) / (end - start)) * 100;
+  if (!Number.isFinite(raw)) return undefined;
+  const elapsedPercent = Math.max(0, Math.min(100, raw));
+  const delta = percent - elapsedPercent;
+  return {
+    elapsedPercent,
+    delta,
+    state: delta > 10 ? 'over' : delta < -10 ? 'under' : 'on',
   };
 }
 
@@ -489,6 +533,29 @@ export async function fetchQuotaReport(options = {}) {
 
   const currentPeriodStart = stringOf(subData?.currentPeriodStart);
   const currentPeriodEnd = stringOf(subData?.currentPeriodEnd);
+  const now = Date.now();
+
+  /** Attach a pace block to one rolling window, deriving its open instant from its reset. */
+  const withPace = (window, spanMs) => {
+    if (window === undefined) return undefined;
+    const resetAt = window.resetAt;
+    return {
+      ...window,
+      pace:
+        resetAt === undefined || spanMs === undefined
+          ? undefined
+          : paceOf(window.percent, resetAt - spanMs, resetAt, now),
+    };
+  };
+
+  const monthlyPace = paceOf(
+    monthlyCap !== undefined && monthlyCap > 0 && usedCredits !== undefined
+      ? Math.min(100, (usedCredits / monthlyCap) * 100)
+      : undefined,
+    currentPeriodStart === undefined ? undefined : Date.parse(currentPeriodStart),
+    currentPeriodEnd === undefined ? undefined : Date.parse(currentPeriodEnd),
+    now,
+  );
 
   let projection;
   if (
@@ -529,6 +596,8 @@ export async function fetchQuotaReport(options = {}) {
             status: stringOf(subData?.status),
             currentPeriodStart,
             currentPeriodEnd,
+            cancelAtPeriodEnd: subData?.cancelAtPeriodEnd === true,
+            canceledAt: stringOf(subData?.canceledAt),
           },
     monthly: {
       used: usedCredits,
@@ -541,10 +610,12 @@ export async function fetchQuotaReport(options = {}) {
       freeCredits: numberOf(creditData?.freeCredits),
       purchasedCredits: numberOf(creditData?.purchasedCredits),
       belowThreshold: creditData?.belowThreshold === true,
+      creditThreshold: numberOf(creditData?.creditThreshold),
       periodBasis: stringOf(usage?.periodBasis),
+      pace: monthlyPace,
     },
-    fiveHour: parseWindow(windowLimits?.fiveHour),
-    weekly: parseWindow(windowLimits?.weekly),
+    fiveHour: withPace(parseWindow(windowLimits?.fiveHour), WINDOW_SPAN_MS.fiveHour),
+    weekly: withPace(parseWindow(windowLimits?.weekly), WINDOW_SPAN_MS.weekly),
     totals: {
       requests: numberOf(usage?.totalCount),
       successRate: numberOf(usage?.successRate),
