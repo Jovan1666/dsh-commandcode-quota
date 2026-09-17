@@ -200,16 +200,18 @@ node cli/cli.mjs --help
 Command Code · GOAT（individual-goat） · Jovan1666
 key: $DSH_HOME/.credentials.yaml → refs.COMMAND_CODE_GOAT_API_KEY
 
-5 小时     ░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 1.4%
-           今天 21:55 重置（2 小时 12 分后）
-每周       ████░░░░░░░░░░░░░░░░░░░░░░░░ 12.8%
+5 小时     ---------------------------- 1.4%
+           今天 21:55 重置（2 小时 4 分后）
+
+每周       ####------------------------ 12.8%
            09-24 01:51 重置（6 天 6 小时后）
-月度额度   ████████████████████████████ 99.8% · $70.11 / $70.23
+
+月度额度   ############################ 99.8% · $70.11 / $70.23
            剩余 $0.11 · 09-25 17:08 重置（7 天 21 小时后）
 本周期  18,087 请求 · 成功率 100% · in 3.49B / out 16.77M tokens
-
-No rule lines and no right-aligned columns: every line stands on its own, so the sample looks the same in a terminal and in a browser's code font.
 ```
+
+Shown with `--ascii`, and deliberately so: the default bars are drawn with full-height block glyphs, which sit flush against the text line beside them in many code fonts — in this very README the weekly bar merged with the 5-hour countdown above it. `#` and `-` are ordinary glyphs and travel everywhere. There are also no rule lines and no right-aligned columns, so every line stands on its own instead of depending on character-cell widths.
 
 Flags: `--json`, `--watch [seconds]`, `--ascii`, `--color` / `--no-color`, `--base <url>`, `--timeout <ms>`, `--key <key>`.
 

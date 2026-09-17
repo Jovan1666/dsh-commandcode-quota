@@ -1,6 +1,12 @@
 /**
- * Reproduce how GitHub renders the README's CLI sample, to check whether the
- * box-drawing columns survive the browser's monospace font stack.
+ * Reproduce how GitHub renders the README's CLI and `/quota` samples, to check
+ * them against the browser's monospace font stack.
+ *
+ * The samples carry no box-drawing characters on purpose — a bar built from
+ * full-height block glyphs sits flush against the neighbouring line of text in
+ * many code fonts, which is exactly how this README looked before — so what is
+ * worth checking here is wrapping, and that the columns still line up without
+ * depending on the font's idea of a cell.
  *
  * Run: node preview/check-blocks.mjs   then screenshot preview/blocks.html.
  */
@@ -21,15 +27,23 @@ function fencedBlocks(markdown) {
   return blocks
 }
 
-const readme = readFileSync(path.join(root, 'README.md'), 'utf8')
-const blocks = fencedBlocks(readme).filter((block) => /[─█░]/.test(block))
+// Both READMEs: checking only the English one left the Chinese samples — which
+// are the ones a Chinese-speaking user reads — entirely unverified.
+const sources = ['README.md', 'README.zh-CN.md'].map((name) => ({
+  name,
+  blocks: fencedBlocks(readFileSync(path.join(root, name), 'utf8'))
+    // Matched by content rather than by the characters they used to contain: the
+    // samples are plain text now, and a filter for box glyphs would match nothing.
+    .filter((block) => /^Command Code · /m.test(block)),
+}))
+const blocks = sources.flatMap((source) => source.blocks.map((block) => ({ name: source.name, block })))
 
 // A checker that finds nothing to check must not report success: on a CRLF
 // checkout the fence pattern used to match zero blocks and say so quietly, which
 // reads exactly like a pass. (It also has to tolerate CRLF, since that is what a
 // Windows checkout produces.)
 if (blocks.length === 0) {
-  console.error('check-blocks: found no box-drawing sample in README.md — nothing was checked.')
+  console.error('check-blocks: found no CLI sample in README.md / README.zh-CN.md — nothing was checked.')
   process.exit(1)
 }
 
@@ -46,7 +60,7 @@ const html = `<!doctype html>
   }
   .ruler{position:relative;height:0;border-top:1px dashed #d00;margin:-4px 0 20px}
 </style></head><body>
-${blocks.map((block, index) => `<h2>block ${String(index)} — ${String(block.split('\n').length)} lines</h2><pre>${block.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c])}</pre>`).join('\n')}
+${blocks.map((entry, index) => `<h2>${entry.name} · block ${String(index)} — ${String(entry.block.split('\n').length)} lines</h2><pre>${entry.block.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c])}</pre>`).join('\n')}
 </body></html>`
 
 writeFileSync(path.join(here, 'blocks.html'), html, 'utf8')

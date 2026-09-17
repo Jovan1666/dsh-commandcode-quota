@@ -198,7 +198,10 @@ function windowLine(label, window, options, withMoney = false) {
   ]
     .filter((part) => part !== undefined)
     .join(' · ');
-  return [head, `${' '.repeat(LABEL_WIDTH)} ${options.color ? DIM : ''}${detail}${options.color ? RESET : ''}`];
+  // A blank line after each window: `█` and `░` fill the full line box in most
+  // monospace fonts, so a bar sitting directly under a line of text reads as if
+  // the two had merged — which is exactly how this looked in the README.
+  return [head, `${' '.repeat(LABEL_WIDTH)} ${options.color ? DIM : ''}${detail}${options.color ? RESET : ''}`, ''];
 }
 
 /** 渲染完整报告。 */
@@ -217,9 +220,17 @@ function render(report, options) {
   }
   lines.push('');
 
-  lines.push(...windowLine('5 小时', report.fiveHour, options));
-  lines.push(...windowLine('每周', report.weekly, options));
-  lines.push(...windowLine('月度额度', { ...report.monthly, resetAt: report.plan === undefined ? undefined : Date.parse(report.plan.currentPeriodEnd ?? '') }, options, true));
+  // The blank line each window ends with is dropped from the last group so the
+  // summary follows the monthly block instead of floating away from it.
+  const groups = [
+    windowLine('5 小时', report.fiveHour, options),
+    windowLine('每周', report.weekly, options),
+    windowLine('月度额度', { ...report.monthly, resetAt: report.plan === undefined ? undefined : Date.parse(report.plan.currentPeriodEnd ?? '') }, options, true),
+  ];
+  groups.forEach((group, index) => {
+    const last = index === groups.length - 1;
+    lines.push(...(last ? group.filter((_, lineIndex) => lineIndex < group.length - 1) : group));
+  });
 
   const totals = report.totals;
   lines.push(
