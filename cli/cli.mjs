@@ -171,16 +171,21 @@ function padLabel(text, width) {
   return color ? `${level.color}${body}${RESET}` : body;
 }
 
-/** 一行额度窗口。 */
-function windowLine(label, window, options) {
+/**
+ * 一行额度窗口。
+ *
+ * 金额只给月度：5 小时/每周是"能不能用"的闸门而非预算，摆出金额没有可执行性，
+ * 与卡片保持同一取舍（完整数字仍可从 `--json` 取）。
+ */
+function windowLine(label, window, options, withMoney = false) {
   const heading = padLabel(label, LABEL_WIDTH);
   if (window === undefined) return [`${heading} 该账号未上报此窗口`];
   const percent = window.percent;
-  const head = `${heading} ${bar(percent, options.ascii, options.color)} ${money(window.used)} / ${money(window.cap)} · ${percent === undefined ? '—' : `${percent.toFixed(1)}%`}`;
-  const left = window.cap - window.used;
+  const span = withMoney ? ` · ${money(window.used)} / ${money(window.cap)}` : '';
+  const head = `${heading} ${bar(percent, options.ascii, options.color)} ${percent === undefined ? '—' : `${percent.toFixed(1)}%`}${span}`;
   const reset = countdown(window.resetAt);
   const detail = [
-    `剩余 ${money(left)}`,
+    withMoney ? `剩余 ${money(window.cap - window.used)}` : undefined,
     reset === undefined ? undefined : `${when(window.resetAt)} 重置（${reset}）`,
     window.exceeded ? '已超限' : undefined,
   ]
@@ -200,9 +205,9 @@ function render(report, options) {
   }
   lines.push('─'.repeat(72));
 
-  lines.push(...windowLine('月度额度', { ...report.monthly, resetAt: report.plan === undefined ? undefined : Date.parse(report.plan.currentPeriodEnd ?? '') }, options));
   lines.push(...windowLine('5 小时', report.fiveHour, options));
   lines.push(...windowLine('每周', report.weekly, options));
+  lines.push(...windowLine('月度额度', { ...report.monthly, resetAt: report.plan === undefined ? undefined : Date.parse(report.plan.currentPeriodEnd ?? '') }, options, true));
 
   lines.push('─'.repeat(72));
   const totals = report.totals;
@@ -211,19 +216,6 @@ function render(report, options) {
   );
   if (report.monthly.freeCredits || report.monthly.purchasedCredits) {
     lines.push(`额外额度  赠送 ${money(report.monthly.freeCredits)} · 已购 ${money(report.monthly.purchasedCredits)}（不受窗口限制）`);
-  }
-  const projection = report.projection;
-  if (projection !== undefined && projection.runsOutInDays !== undefined) {
-    const daysLeft = projection.totalDays - projection.elapsedDays;
-    lines.push(
-      `消耗速度  ${money(projection.dailyRate)}/天（周期已过 ${projection.elapsedDays.toFixed(1)} / ${projection.totalDays.toFixed(1)} 天）`,
-    );
-    const runsOut = projection.runsOutInDays;
-    lines.push(
-      runsOut < daysLeft
-        ? `预计     按此速度约 ${runsOut.toFixed(1)} 天后耗尽，早于周期重置（还剩 ${daysLeft.toFixed(1)} 天）`
-        : `预计     按此速度可撑到周期重置（还剩 ${daysLeft.toFixed(1)} 天）`,
-    );
   }
   if (report.failures.length > 0) {
     lines.push(`降级     以下端点失败：${report.failures.join('; ')}`);

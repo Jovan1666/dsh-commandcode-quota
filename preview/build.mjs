@@ -97,7 +97,15 @@ const tokens = [
   `[data-ds-dark-theme]{${declarationsOf(themeSource, 'body[data-ds-dark-theme]')}}`,
 ].join('\n')
 
-/** Fixture shaped exactly like the host route's report. */
+/**
+ * Fixture shaped exactly like the host route's report.
+ *
+ * A representative mid-cycle state rather than a corner case: the monthly bar
+ * sits in its red band (so the colour scale is visible) without tripping the
+ * threshold warning, which stays covered by the client unit tests. Warning
+ * bands, stale markers and the absent state all have dedicated test coverage;
+ * this fixture exists so the common card can be looked at.
+ */
 const REPORT = {
   fetchedAt: new Date().toISOString(),
   plan: {
@@ -108,11 +116,11 @@ const REPORT = {
     currentPeriodStart: new Date(Date.now() - 22.9 * 86_400_000).toISOString(),
     currentPeriodEnd: new Date(Date.now() + 8.1 * 86_400_000).toISOString(),
   },
-  monthly: { used: 69.26, remaining: 0.96, cap: 70.22, percent: 98.6, freeCredits: 0, purchasedCredits: 0, periodBasis: 'billing-period', belowThreshold: true, pace: { elapsedPercent: 74.2, delta: 24.4, state: 'over' } },
-  fiveHour: { used: 3.49, cap: 14, percent: 24.9, exceeded: false, resetAt: Date.now() + 3_600_000, pace: { elapsedPercent: 80, delta: -55.1, state: 'under' } },
-  weekly: { used: 3.63, cap: 35, percent: 10.4, exceeded: false, resetAt: Date.now() + 6.4 * 86_400_000, pace: { elapsedPercent: 9, delta: 1.4, state: 'on' } },
+  monthly: { used: 61.8, remaining: 8.42, cap: 70.22, percent: 88.0, freeCredits: 0, purchasedCredits: 0, periodBasis: 'billing-period', belowThreshold: false },
+  fiveHour: { used: 3.49, cap: 14, percent: 24.9, exceeded: false, resetAt: Date.now() + 3_600_000 },
+  weekly: { used: 3.63, cap: 35, percent: 10.4, exceeded: false, resetAt: Date.now() + 6.4 * 86_400_000 },
   totals: { requests: 17_928, successRate: 100, tokensIn: 3_410_000_000, tokensOut: 16_600_000 },
-  projection: { elapsedDays: 22.9, totalDays: 31, dailyRate: 3.02, runsOutInDays: 0.3 },
+  projection: { elapsedDays: 22.9, totalDays: 31, dailyRate: 2.7, runsOutInDays: 3.1 },
   failures: [],
 }
 

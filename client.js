@@ -10,17 +10,21 @@
  * Presentation rules:
  *
  * - Windows run shortest first (5 hours, weekly, monthly), so the tightest
- *   constraint sits where the eye lands first.
- * - The used *percentage* is the row's value and the bar repeats it graphically;
- *   credit amounts are secondary and live in the expanded body, because a user
- *   rarely knows their plan's totals but reads "98.6%" instantly. The headline
- *   rounds to a whole percent — the same rounding the official dashboard uses —
- *   so the card and the website can be compared without a mental conversion;
- *   the exact one-decimal value stays on the row's hover tooltip.
- * - The bar also carries a tick at the window's *elapsed* share, so "will this
- *   last until it resets?" is answered by two marks instead of by arithmetic.
- *   That comparison replaces an extrapolated exhaustion time: credit burn is
- *   bursty, while two cumulative shares over the same window stay comparable.
+ *   constraint sits where your eye lands first.
+ * - The used *percentage* is the row's value and the bar repeats it graphically,
+ *   because that is the whole question this card answers: how deep into the
+ *   window am I? The headline rounds to a whole percent — the same rounding the
+ *   official dashboard uses — so the card and the website can be compared
+ *   without a mental conversion; the exact one-decimal value and the dollar
+ *   amounts stay one hover away.
+ * - Space is deliberately scarce: the sidebar is narrow and laptop screens make
+ *   small type smaller still. Only the monthly allowance is shown in money —
+ *   it is the one total a user actually budgets against — while the rolling
+ *   windows stay percentage-only, because the API reports them as pass/fail
+ *   limits rather than as something to track in dollars.
+ * - Nothing is deduced about *pace*. How fast a user burns credit is their
+ *   business; a card that editorialises about "over pace" tells someone who
+ *   simply has work to do something they cannot act on.
  * - The card renders nothing at all when this host has no Command Code provider,
  *   so installing the plugin cannot park an error box in the sidebar of somebody
  *   who does not use the service.
@@ -73,17 +77,12 @@ window.__ModuleLoader__.load({
         weekly: '每周',
         monthly: '月度',
         left: '剩',
+        remainingLabel: '剩余',
         reset: '{time} 后重置',
         overLimit: '已超限',
-        over: '超速',
-        on: '正常',
-        under: '富余',
-        paceLine: '已用 {used}% · 窗口已过 {elapsed}% · {state}',
         usedOf: '{label}已用',
         requests: '{count} 请求 · {rate}%',
         tokens: '输入 {in} / 输出 {out}',
-        burn: '{rate}/天',
-        runsOut: '约 {days} 天后耗尽',
         balance: '额外额度',
         belowThreshold: '额度已低于阈值',
         subCanceled: '订阅已取消，{date} 到期',
@@ -98,17 +97,12 @@ window.__ModuleLoader__.load({
         weekly: 'Weekly',
         monthly: 'Monthly',
         left: 'left',
+        remainingLabel: 'Remaining',
         reset: 'resets in {time}',
         overLimit: 'over limit',
-        over: 'over pace',
-        on: 'on pace',
-        under: 'under pace',
-        paceLine: '{used}% used · {elapsed}% elapsed · {state}',
         usedOf: '{label} used',
         requests: '{count} requests · {rate}%',
         tokens: 'in {in} / out {out}',
-        burn: '{rate}/day',
-        runsOut: 'exhausted in about {days} days',
         balance: 'Extra credit',
         belowThreshold: 'credit is below the configured threshold',
         subCanceled: 'Subscription canceled, ends {date}',
@@ -127,50 +121,45 @@ window.__ModuleLoader__.load({
   cursor:pointer;-webkit-user-select:none;user-select:none}
 .ccq-card:hover{background:var(--dsw-alias-button-floating-hover)}
 .ccq-card.ccq-stale{opacity:.62}
-.ccq-head{display:flex;align-items:center;gap:6px;padding-bottom:9px;margin-bottom:10px;
+.ccq-head{display:flex;align-items:center;gap:6px;padding-bottom:8px;margin-bottom:10px;
   border-bottom:1px solid var(--dsw-alias-border-l1)}
 .ccq-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-size:13px;font-weight:600;line-height:18px}
-.ccq-plan{flex:none;padding:1px 6px;border-radius:6px;font-size:10px;line-height:14px;font-weight:500;
+.ccq-plan{flex:none;padding:1px 6px;border-radius:6px;font-size:12px;line-height:16px;font-weight:500;
   background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-tertiary)}
-.ccq-chevron{flex:none;color:var(--dsw-alias-label-caption);font-size:9px;line-height:18px;
+.ccq-chevron{flex:none;color:var(--dsw-alias-label-caption);font-size:12px;line-height:18px;
   transition:transform 150ms ease}
 .ccq-chevron.ccq-open{transform:rotate(180deg)}
-.ccq-win+.ccq-win{margin-top:11px}
+.ccq-win+.ccq-win{margin-top:10px}
 .ccq-winhead{display:flex;align-items:baseline;gap:8px}
-.ccq-winlabel{flex:none;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+.ccq-winlabel{flex:none;font-size:13px;line-height:18px;color:var(--dsw-alias-label-secondary)}
 .ccq-spacer{flex:1;min-width:0}
 .ccq-pct{flex:none;font-size:14px;font-weight:600;line-height:18px;font-variant-numeric:tabular-nums}
-.ccq-reset{flex:none;padding:1px 6px;border-radius:6px;font-size:10px;line-height:14px;
+.ccq-reset{flex:none;padding:2px 7px;border-radius:6px;font-size:12px;line-height:16px;
   background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-tertiary);
   font-variant-numeric:tabular-nums;white-space:nowrap}
 .ccq-track{position:relative;height:6px;margin-top:7px;border-radius:3px;overflow:hidden;
   background:var(--dsw-alias-interactive-bg-hover)}
 .ccq-fill{display:block;height:100%;border-radius:3px;transition:width 240ms ease,background 240ms ease}
-.ccq-tick{position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;border-radius:1px;
-  background:var(--dsw-alias-label-primary);opacity:.55}
-.ccq-warn{display:flex;align-items:center;gap:6px;margin-top:10px;padding:5px 7px;border-radius:7px;
-  font-size:10px;line-height:15px;background:var(--dsw-alias-interactive-bg-hover-danger);
+.ccq-warn{display:flex;align-items:center;gap:6px;margin-top:10px;padding:6px 8px;border-radius:7px;
+  font-size:12px;line-height:17px;background:var(--dsw-alias-interactive-bg-hover-danger);
   color:var(--dsw-alias-state-error-primary)}
-.ccq-detail{margin-top:12px;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l1)}
+.ccq-detail{margin-top:11px;padding-top:9px;border-top:1px solid var(--dsw-alias-border-l1)}
 .ccq-kv{display:flex;align-items:baseline;justify-content:space-between;gap:10px;
-  font-size:11px;line-height:19px;color:var(--dsw-alias-label-secondary)}
+  font-size:12px;line-height:20px;color:var(--dsw-alias-label-secondary)}
 .ccq-kv-label{flex:none;white-space:nowrap}
 .ccq-kv-value{min-width:0;text-align:right;color:var(--dsw-alias-label-primary);
   font-variant-numeric:tabular-nums}
-.ccq-pace{margin-top:3px;font-size:10px;line-height:15px;color:var(--dsw-alias-label-caption);
-  font-variant-numeric:tabular-nums}
-.ccq-pace.ccq-over{color:var(--dsw-alias-state-error-primary)}
-.ccq-note{margin-top:7px;padding-top:7px;border-top:1px solid var(--dsw-alias-border-l1);
-  font-size:10px;line-height:16px;color:var(--dsw-alias-label-caption);
+.ccq-note{margin-top:6px;padding-top:6px;border-top:1px solid var(--dsw-alias-border-l1);
+  font-size:12px;line-height:18px;color:var(--dsw-alias-label-caption);
   font-variant-numeric:tabular-nums}
 .ccq-note+.ccq-note{margin-top:1px;padding-top:0;border-top:none}
-.ccq-link{display:inline-block;margin-top:8px;font-size:10px;line-height:15px;
+.ccq-link{display:inline-block;margin-top:8px;font-size:12px;line-height:17px;
   color:var(--dsw-alias-link);text-decoration:none}
 .ccq-link:hover{text-decoration:underline}
-.ccq-error{font-size:11px;line-height:18px;color:var(--dsw-alias-state-error-primary)}
+.ccq-error{font-size:12px;line-height:18px;color:var(--dsw-alias-state-error-primary)}
 .ccq-rail{box-sizing:border-box;width:36px;height:36px;border-radius:50%;display:flex;
-  align-items:center;justify-content:center;font-size:11px;font-weight:600;
+  align-items:center;justify-content:center;font-size:12px;font-weight:600;
   font-variant-numeric:tabular-nums;border:none;background:transparent;cursor:pointer}
 .ccq-rail:hover{background:var(--dsw-alias-interactive-bg-hover)}
 `
@@ -281,7 +270,6 @@ window.__ModuleLoader__.load({
           remaining: used !== undefined && cap !== undefined ? cap - used : undefined,
           resetAt: key === 'monthly' ? periodEnd : source.resetAt,
           exceeded: source.exceeded === true,
-          pace: source.pace,
         })
       }
       return rows
@@ -377,7 +365,7 @@ window.__ModuleLoader__.load({
       return { state, refresh }
     }
 
-    /** One credit window: label and percentage, the meter with its pace tick, and the reset chip. */
+    /** One credit window: label, percentage, the meter, and the reset chip. */
     function WindowRow({ row, t }) {
       const percent = row.percent
       const color = levelToken(percent)
@@ -390,13 +378,6 @@ window.__ModuleLoader__.load({
         // The exact reset instant stays one hover away even though the row chip
         // only carries the countdown.
         row.resetAt === undefined ? undefined : when(row.resetAt),
-        row.pace === undefined
-          ? undefined
-          : format(t('paceLine'), {
-              used: (percent ?? 0).toFixed(1),
-              elapsed: row.pace.elapsedPercent.toFixed(1),
-              state: t(row.pace.state),
-            }),
       ].filter((part) => part !== undefined)
       const fill = Math.max(0, Math.min(100, percent ?? 0))
       const chip = row.exceeded ? t('overLimit') : countdown === undefined ? undefined : format(t('reset'), { time: countdown })
@@ -409,46 +390,53 @@ window.__ModuleLoader__.load({
         ),
         h('div', { className: 'ccq-track' },
           h('span', { className: 'ccq-fill', style: { width: `${fill}%`, background: color } }),
-          // Where the window's elapsed share sits. The fill crossing this mark,
-          // plus the row colour, is the entire "will it last" signal.
-          row.pace === undefined
-            ? null
-            : h('span', {
-                className: 'ccq-tick',
-                style: { left: `${Math.max(0, Math.min(100, row.pace.elapsedPercent))}%` },
-              }),
         ),
       )
     }
 
-    /** One label/value detail line; the label never shrinks, the value wraps. */
-    function Detail({ label, value }) {
+    /**
+     * One label/value detail line; the label never shrinks, the value wraps.
+     * @param props.tone - optional colour token for the value, used to let the
+     * remaining credit carry the same urgency as the bar it belongs to.
+     */
+    function Detail({ label, value, tone }) {
       return h('div', { className: 'ccq-kv' },
         h('span', { className: 'ccq-kv-label' }, label),
-        h('span', { className: 'ccq-kv-value' }, value),
+        h('span', { className: 'ccq-kv-value', style: tone === undefined ? undefined : { color: tone } }, value),
       )
     }
 
-    /** Expanded body: amounts per window, then the period totals as muted lines. */
+    /**
+     * Expanded body: the monthly allowance in money, then the period totals.
+     *
+     * Only the monthly window gets money. The rolling windows are pass/fail
+     * limits, not budgets — their dollar figures tell a user nothing they can
+     * act on, and the sidebar has no space to spend on decoration.
+     *
+     * Used and remaining are separate rows on purpose: the sidebar's content
+     * width is about 200px, so a single "used / total · left" line wraps into
+     * two ragged lines anyway — stating them as two rows reads as a deliberate
+     * pair instead of as a broken line.
+     */
     function detailRows(report, rows, t) {
       const body = []
-      for (const row of rows) {
-        if (row.used === undefined || row.cap === undefined) continue
+      const monthly = rows.find((row) => row.key === 'monthly')
+      if (monthly !== undefined && monthly.used !== undefined && monthly.cap !== undefined) {
         body.push(h(Detail, {
-          key: `${row.key}-amount`,
-          label: format(t('usedOf'), { label: t(row.label) }),
-          value: `${money(row.used)} / ${money(row.cap)}${row.remaining === undefined ? '' : ` · ${t('left')} ${money(row.remaining)}`}`,
+          key: 'monthly-used',
+          label: format(t('usedOf'), { label: t(monthly.label) }),
+          value: `${money(monthly.used)} / ${money(monthly.cap)}`,
         }))
-        if (row.pace !== undefined) {
-          body.push(h('div', {
-            key: `${row.key}-pace`,
-            className: `ccq-pace${row.pace.state === 'over' ? ' ccq-over' : ''}`,
-          }, format(t('paceLine'), {
-            used: (row.percent ?? 0).toFixed(1),
-            elapsed: row.pace.elapsedPercent.toFixed(1),
-            state: t(row.pace.state),
-          })))
-        }
+      }
+      if (monthly?.remaining !== undefined) {
+        body.push(h(Detail, {
+          key: 'monthly-left',
+          label: t('remainingLabel'),
+          value: money(monthly.remaining),
+          // The number that decides whether the month still works carries the
+          // same colour as the monthly bar.
+          tone: levelToken(monthly.percent),
+        }))
       }
 
       const balance = balanceOf(report)
@@ -468,16 +456,6 @@ window.__ModuleLoader__.load({
           rate: totals.successRate ?? '—',
         }))
         notes.push(format(t('tokens'), { in: tokens(totals.tokensIn), out: tokens(totals.tokensOut) }))
-      }
-      const projection = report?.projection
-      if (projection?.runsOutInDays !== undefined) {
-        const daysLeft = projection.totalDays - projection.elapsedDays
-        const burn = `$${projection.dailyRate.toFixed(2)}`
-        notes.push(
-          projection.runsOutInDays < daysLeft
-            ? `${format(t('burn'), { rate: burn })} · ${format(t('runsOut'), { days: projection.runsOutInDays.toFixed(1) })}`
-            : format(t('burn'), { rate: burn }),
-        )
       }
       for (const [index, note] of notes.entries()) {
         body.push(h('div', { key: `note-${String(index)}`, className: 'ccq-note' }, note))

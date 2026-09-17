@@ -33,13 +33,21 @@ Rows run **shortest window first**, so the tightest constraint sits where your e
 - a full-width **progress meter** in the same colour,
 - a muted **reset countdown** (`59m`, `6d9h`, `8d1h`) so you know when it comes back.
 
-Click the card to expand the amounts behind the percentages, the billing-period totals, and the burn-rate projection. Collapse the sidebar to its rail and the card becomes a 36 px badge showing the **most constrained** window's percentage.
+Click the card to expand the monthly allowance in money, the remaining credit, and the billing-period totals. Collapse the sidebar to its rail and the card becomes a 36 px badge showing the **most constrained** window's percentage.
 
 Everything the card shows comes from **your account's own data** — window count, caps, and percentages are read from the API, never assumed. Plans that report no rolling windows (pay-as-you-go **Provider**, for instance) simply render no rows. Go, GOAT, Pro, Max, Provider, and Teams all work.
 
+### What the card deliberately leaves out
+
+The sidebar is roughly 200 px of content width, and a laptop screen makes small type smaller still. So the card answers one question well — *how deep am I?* — instead of laying out everything the API returns:
+
+- **Money only for the monthly allowance** in the expanded body. The 5-hour and weekly windows are pass/fail limits, not budgets; their dollar rows told a user nothing they could act on, and they pushed the numbers that matter off the fold. Hover still shows exact figures for every row.
+- **No pace verdict, no burn-rate forecast.** "Over pace" cannot be acted on by someone who has work to do, and a projected exhaustion date assumes a constant burn rate that credit usage never has. The host still exposes `projection` in its JSON for the CLI and for scripts.
+- **One click, not ten lines.** The expanded body is the monthly used/remaining pair plus the period totals — five short lines in total.
+
 ### Reading the numbers
 
-Percentages are computed from the live API as `used ÷ (used + remaining)`; the fixture-free arithmetic is checked against a real account on every change. The row headline is rounded to a **whole percent** — the same rounding the Command Code dashboard uses — so the card and the website never disagree at a glance. The exact one-decimal value, the dollar amounts, and the remaining credit sit one hover (or one click) away.
+Percentages are computed from the live API as `used ÷ (used + remaining)`, and `preview/e2e-live.mjs` asserts that identity against a real account on demand. The row headline is rounded to a **whole percent** — the same rounding the Command Code dashboard uses — so the card and the website never disagree at a glance. The exact one-decimal value and the dollar amounts sit one hover (or one click) away.
 
 That is also why the dashboard can say `100%` while the precise share is `99.84%`: same data, two roundings. When the two ever differed by more than rounding, the meters would drift apart too — and the card's `used + remaining = cap` identity is asserted against the live API to catch that.
 
@@ -104,7 +112,7 @@ New-Item -ItemType Junction `
 | Action | Result |
 |---|---|
 | Look at the sidebar foot | Three windows, percentages, meters, reset countdowns |
-| Click the card | Expand amounts, pace comparison, period totals, token counts, burn-rate projection |
+| Click the card | Expand the monthly allowance, remaining credit, request count and token totals |
 | Hover a row | Exact `used / cap`, remaining credit, the one-decimal percentage, and the absolute reset time |
 | Collapse the sidebar | The card becomes a 36 px rail badge with the most constrained window's percentage |
 | Type `/quota` in a chat | The same report printed into the conversation |
@@ -152,13 +160,21 @@ node cli/cli.mjs --help
 ```
 
 ```text
-Command Code · GOAT · Jovan1666
-月度额度  已用 98.6%，剩 $0.96，09-25 17:08 重置
-5 小时    已用 24.9%，剩 $10.51，今天 16:55 重置
-每周      已用 10.4%，剩 $31.37，09-24 01:51 重置
+Command Code · GOAT（individual-goat）                          Jovan1666
+────────────────────────────────────────────────────────────────────────
+5 小时     ░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 1.4%
+           今天 21:55 重置（3 小时 30 分后）
+每周       ████░░░░░░░░░░░░░░░░░░░░░░░░ 12.8%
+           09-24 01:51 重置（6 天 7 小时后）
+月度额度   ████████████████████████████ 99.8% · $70.11 / $70.23
+           剩余 $0.11 · 09-25 17:08 重置（7 天 22 小时后）
+────────────────────────────────────────────────────────────────────────
+本周期  18,087 请求 · 成功率 100% · in 3.49B / out 16.77M tokens
 ```
 
 Flags: `--json`, `--watch [seconds]`, `--ascii`, `--color` / `--no-color`, `--base <url>`, `--timeout <ms>`, `--key <key>`.
+
+The CLI's human-readable output is Chinese, like the plugin's own CLI origin; `--json` is language-neutral and is the interface to script against. The CLI follows the card's presentation rules: money on the monthly allowance only, no pace verdict and no burn-rate forecast (those remain available in the JSON).
 
 Error codes (exit code 2): `MISSING_CREDENTIAL`, `AUTH`, `NOT_FOUND` (usually a plan without API access), `RATE_LIMIT`, `SERVICE`, `NETWORK`, `BAD_RESPONSE`, `USAGE`.
 
@@ -215,10 +231,10 @@ mkdir .devdeps && cd .devdeps
 npm init -y && npm install react@18 react-dom@18
 cd ..
 
-# 2. Offline tests — 40 checks, no network, no real credentials.
+# 2. Offline tests — 56 checks, no network, no real credentials.
 node tests/quota.test.mjs     # 15  route discovery, credential order, plan table
-node tests/host.test.mjs      #  9  route registration, cache, envelope guards, failures
-node tests/client.test.mjs    # 16  slot registration, injected face, five render states
+node tests/host.test.mjs      # 15  route registration, cache, envelope guards, /quota command
+node tests/client.test.mjs    # 26  slot registration, injected face, layout rules, render states
 
 # 3. Optional: verify nothing credential-shaped or machine-specific is staged.
 node scripts/audit.mjs
@@ -226,22 +242,24 @@ node scripts/audit.mjs
 
 ### Previewing the card without restarting dsh
 
-Editing styles by restarting a live `dsh web` is slow. `preview/build.mjs` renders the **real `client.js`** into a mock sidebar — real theme tokens, light/dark, collapsed/expanded side by side — and Chrome's headless screenshot mode captures it:
+Editing styles by restarting a live `dsh web` is slow. `preview/build.mjs` renders the **real `client.js`** into a mock sidebar — real theme tokens, light/dark, collapsed/expanded side by side — and Chrome's headless screenshot mode captures it. The `--virtual-time-budget` matters: the expanded column is opened by a scripted click on a timer, and without it the screenshot races the timer and catches every column collapsed.
 
 ```sh
 node preview/build.mjs
 chrome --headless=new --disable-gpu --hide-scrollbars \
-  --force-device-scale-factor=2 --window-size=860,470 --virtual-time-budget=5000 \
+  --force-device-scale-factor=2 --window-size=816,470 --virtual-time-budget=5000 \
   --screenshot=preview/shot.png "file://$PWD/preview/index.html"
+
+# The same command pointed at assets/screenshot.png produces the README image.
 ```
 
 The theme's design tokens are extracted by merging **every** `body{}` and `body[data-ds-dark-theme]{}` block from the installed `dsh-client-ui-theme` bundle. Taking only the last block drops `--dsw-alias-state-*`, which turns every meter transparent — a trap this repo has already fallen into once.
 
 ## Known limitations
 
-- **Polling, not push.** The panel refreshes every 60 seconds (15-second host cache). Credit changes can lag by up to a minute.
+- **Polling, not push.** The panel refreshes every 60 seconds (15-second host cache), or every 15 seconds once a window passes 85 %. Credit changes can lag by up to a minute.
+- **No burn-rate forecast, by design.** The card does not estimate an exhaustion date. Credit burn is bursty — a heavy afternoon says nothing about next week — and a user with work to do cannot act on a pace verdict anyway. The host still reports `projection` in its JSON for the CLI and for scripts.
 - **No per-model allowance breakdown.** Command Code allocates a per-model share of the monthly budget, but the `/alpha` endpoints do not expose that table, so the card reports the total only.
-- **The burn-rate projection is a period average.** It divides credits used by elapsed days, so it ignores a recent change of model or workload.
 - **No history.** Every read is a live snapshot; nothing is stored locally.
 - **Command Code only.** This does not replace dsh's own local token accounting, which lives in `$DSH_HOME/dsh-usage/`.
 - **Private framework seams.** See [Compatibility](#compatibility).
