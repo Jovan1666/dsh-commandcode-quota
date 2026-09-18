@@ -133,8 +133,45 @@ Monthly 99.8% used · $70.11 / $70.23 · $0.11 left · resets in 7d22h
 ## 环境要求
 
 - **DeepSeek Harness** `^0.1.5-rc.1`。插件依赖若干尚未稳定的框架内部接缝，见[兼容性](#兼容性)。
-- 一个**有 API 权限**的 Command Code 账号（除 $1 的 **Go** 档外都包含）。
+- 一个**有 API 权限**的 Command Code 账号（除 $1 的 **Go** 档外都包含），见[套餐与订阅](#套餐与订阅)。
 - Node.js 18+ —— 只有可选的命令行工具和开发脚本需要。
+
+## 套餐与订阅
+
+只要有 API 权限，卡片哪一档都能读。这个插件是照着 **GOAT** 做的：$10/月，拿到 $70 额度，另有 5 小时 $14、每周 $35 两道闸。
+
+GOAT 是适合 agent 循环的那一档。Command Code 官方对 **DeepSeek V4 Flash** 的估算是一个月 **约 154,000 次请求**（5 小时约 30,800 次、每周约 76,900 次）——因为 flash 档的单价大致是每百万 token 输入 $0.15、输出 $0.60、缓存读取 $0.003。写代码的 agent 花的正是这类调用：单次很小、次数很多，上下文大部分从缓存里读。一个月几万轮工具调用是正常工作量，到这个价位先见底的是窗口闸和月度额度，而不是请求条数。
+
+这两个数字有个前提，官方页面上写着：估算按一次典型 agent 请求约 800 个新输入 token、约 50,000 个缓存读取 token、125–200 个输出 token，所以带大仓库上下文的跑法会消耗得更快；DeepSeek 还按时段计价，高峰时段更贵（UTC 周一至周五 01:00–04:00、06:00–10:00）。官方同时声明额度随时可能调整——[定价页](https://commandcode.ai/docs/resources/pricing-limits)才是准的，上面的数字是 2026-09-19 读到的。
+
+### 订阅步骤
+
+1. 登录 [commandcode.ai](https://commandcode.ai/)，打开[定价页](https://commandcode.ai/pricing)，或者 Studio → Billing。
+2. 选 **GOAT** 下单。信用卡/借记卡走 Stripe；**支持支付宝**，限美元计价的套餐，并且会签自动续费代扣——第一张账单之前先知道这件事比较好。银联未列出。
+3. 在 Studio 的 **API keys** 页点 Generate。key 长这样 `user_…`，不是 `sk-…`。
+4. 交给 dsh。设置 → 模型 里可以交互式添加；改文件就在 `$DSH_HOME/settings.yaml` 里加一条 provider 路由：
+
+   ```yaml
+   llm-pi-ai:
+     providers:
+       command-code-goat:
+         apiKeyEnv: COMMAND_CODE_GOAT_API_KEY
+         api: openai-completions
+         baseURL: https://api.commandcode.ai/provider/v1
+         models:
+           - id: deepseek/deepseek-v4.1-flash
+             contextWindow: 1000000
+             input: ["text", "image"]
+   ```
+
+   key 本身别写进这个文件：放环境变量，或者放 `$DSH_HOME/.credentials.yaml` 的 `refs.COMMAND_CODE_GOAT_API_KEY`。到这里就没了——[凭据解析](#凭据解析)说的就是卡片怎么找到这条同样的路由，所以装插件从不问你要 key。
+
+### 订阅前须知
+
+- **Go（$1）没有 API 权限。** 四个额度端点全部返回 404，插件会报「此套餐无 API 权限」，不会当成可重试的错误。
+- **5 小时和每周两道闸从你第一次请求开始计时**，不按日历切；切换套餐会把这两道闸一起清零。卡片显示的是接口报出来的重置时刻，不拿周期起点去推算。
+- **一人一号。** 条款禁止共享、转售、多账号轮用 key，违规会牵连涉及的每个账号永久封禁。
+- **换档不影响这张卡片。** $20 的 **Pro**（$80 额度）结构相同、余量更大，$100 / $200 的 **Max** 再往上放大。$15 的 **Provider** 是计量的纯 API 接入、没有滚动窗口，卡片就只显示余额、不显示窗口行。
 
 ## 凭据解析
 

@@ -133,8 +133,45 @@ It reads the same cached report the card does, so a slash invocation costs no ex
 ## Requirements
 
 - **DeepSeek Harness** `^0.1.5-rc.1`. The plugin uses framework seams that are not a stable public API yet; see [Compatibility](#compatibility).
-- A **Command Code** account with API access. Every plan except the `$1` **Go** tier includes it.
+- A **Command Code** account with API access. Every plan except the `$1` **Go** tier includes it; see [Getting a Command Code plan](#getting-a-command-code-plan).
 - Node.js 18+ — only for the optional CLI and the development scripts.
+
+## Getting a Command Code plan
+
+The card reads any Command Code plan that has API access. This plugin was built against **GOAT**: `$10/month`, which buys `$70` of credits, gated at `$14` per 5-hour window and `$35` per rolling week.
+
+GOAT is the tier that suits an agent harness. Command Code's own estimate for **DeepSeek V4 Flash** on that allowance is **~154,000 requests a month** (~30,800 per 5-hour window, ~76,900 per week), because flash-tier models bill at roughly `$0.15` input / `$0.60` output per million tokens with cache reads at `$0.003`. A coding agent spends its budget on exactly those calls: many small turns, most of the context re-read from cache. Tens of thousands of tool-calling turns a month is ordinary work, and at that price the window caps and the monthly allowance are what run out — not the request count.
+
+Two caveats on those numbers, both from the same page: the request counts assume a typical agent turn of ~800 fresh input tokens, ~50,000 cache-read tokens and 125–200 output tokens, so a run that carries a large repo context drains the allowance faster; and DeepSeek is billed by time of day, with peak hours priced higher (01:00–04:00 and 06:00–10:00 UTC, Mon–Fri). Command Code states that allowances can change at any time — [the pricing page](https://commandcode.ai/docs/resources/pricing-limits) is authoritative, and the figures above are what it said on 2026-09-19.
+
+### Subscribing
+
+1. Sign in at [commandcode.ai](https://commandcode.ai/) and open [Pricing](https://commandcode.ai/pricing), or Studio → Billing.
+2. Choose **GOAT** and check out. Card payments run through Stripe; **Alipay is supported** on the USD-denominated plans and sets up automatic renewal, which is worth knowing before the first invoice. UnionPay is not listed.
+3. In Studio, open **API keys → Generate**. The key looks like `user_…`, not `sk-…`.
+4. Hand it to dsh. Settings → Models takes a provider interactively; by file, add a route to `$DSH_HOME/settings.yaml`:
+
+   ```yaml
+   llm-pi-ai:
+     providers:
+       command-code-goat:
+         apiKeyEnv: COMMAND_CODE_GOAT_API_KEY
+         api: openai-completions
+         baseURL: https://api.commandcode.ai/provider/v1
+         models:
+           - id: deepseek/deepseek-v4.1-flash
+             contextWindow: 1000000
+             input: ["text", "image"]
+   ```
+
+   Keep the key itself out of the file: put it in the environment, or in `$DSH_HOME/.credentials.yaml` under `refs.COMMAND_CODE_GOAT_API_KEY`. Nothing else is needed — [Credentials](#credentials) is how the card finds this same route, which is why installing the plugin never asks for a key.
+
+### Before you subscribe
+
+- **Go (`$1`) has no API access.** All four quota endpoints answer 404, which the plugin reports as "this plan has no API access" rather than as an error it can retry.
+- **The 5-hour and weekly windows start at your first request**, not at a calendar boundary, and switching plans clears both of them. The card shows the reset times the API reports instead of computing them from a period start.
+- **One account per person.** The terms forbid sharing, reselling, or rotating keys across accounts, and a violation puts every account involved at risk of a permanent ban.
+- **Other tiers, same card.** `$20` **Pro** (`$80` of credits) is the same shape with more headroom and `$100` / `$200` **Max** scale it again. The `$15` **Provider** plan is metered API access with no rolling windows, so the card shows the balance and no window rows.
 
 ## Credentials
 
