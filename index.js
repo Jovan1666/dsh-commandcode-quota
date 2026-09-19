@@ -19,7 +19,7 @@
  * @module dsh-cc-quota
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
 import { credentialFingerprint, fetchQuotaReport, quotaSnapshotPath } from './quota.mjs'
@@ -105,8 +105,14 @@ function readSnapshot(file) {
  */
 function writeSnapshot(file, report, fingerprint) {
   try {
-    mkdirSync(path.dirname(file), { recursive: true })
-    writeFileSync(file, JSON.stringify({ version: 1, fingerprint, report }), 'utf8')
+    // The snapshot carries the account name and its spend, so it gets the same
+    // modes dsh's own credential store uses. Written beside the target and
+    // renamed, so a second dsh reading during this write never sees a
+    // half-written report, and the per-pid name keeps two writers apart.
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    const temp = `${file}.${process.pid}.tmp`
+    writeFileSync(temp, JSON.stringify({ version: 1, fingerprint, report }), { encoding: 'utf8', mode: 0o600 })
+    renameSync(temp, file)
   } catch {
     // Ignored on purpose: see above.
   }
@@ -142,7 +148,9 @@ function shortTokens(value) {
 function countdown(resetAt) {
   if (typeof resetAt !== 'number' || !Number.isFinite(resetAt)) return undefined
   const minutes = Math.floor((resetAt - Date.now()) / 60_000)
-  if (minutes <= 0) return 'now'
+  // A passed instant is not "now": the next refresh replaces the window, and a
+  // line claiming it resets in this second reads as a stalled report.
+  if (minutes <= 0) return undefined
   if (minutes < 60) return `${minutes}m`
   if (minutes < 1_440) return `${Math.floor(minutes / 60)}h${minutes % 60}m`
   return `${Math.floor(minutes / 1_440)}d${Math.floor((minutes % 1_440) / 60)}h`
@@ -374,12 +382,12 @@ export function apply(ctx) {
     return envelope(rpcId, await report({ allowStale: true }))
   }
 
-  ctx.connection.fetch.register({
+  ctx.effect(() => ctx.connection.fetch.register({
     path: ROUTE_PATH,
     methods: ['POST'],
     requestBody: 'buffered',
     fetch: serve,
-  })
+  }))
 
   registerQuotaCommand(ctx, report)
 

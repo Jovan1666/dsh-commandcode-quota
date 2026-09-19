@@ -10,7 +10,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -33,6 +33,14 @@ const check = (label, fn) => {
   console.log(`  ok  ${label}`)
 }
 
+/**
+ * The billing period is relative for the same reason the reset instants below
+ * are: a pinned date turns a countdown assertion into a time bomb that goes off
+ * the day the fixture expires.
+ */
+const PERIOD_START = new Date(Date.now() - 25 * 86_400_000).toISOString()
+const PERIOD_END = new Date(Date.now() + 6.5 * 86_400_000).toISOString()
+
 /** Canned upstream payloads, keyed by endpoint path. */
 const UPSTREAM = {
   '/alpha/whoami': { success: true, user: { id: 'u-1', name: 'Jovan', userName: 'Jovan1666' }, org: null },
@@ -40,13 +48,13 @@ const UPSTREAM = {
   '/alpha/billing/credits': {
     credits: { monthlyCredits: 2.4, purchasedCredits: 0, freeCredits: 0, belowThreshold: false },
     windowLimits: {
-      fiveHour: { used: 2.18, cap: 14, exceeded: false, resetAt: 1_789_635_322_145 },
-      weekly: { used: 2.31, cap: 35, exceeded: false, resetAt: 1_790_185_904_570 },
+      fiveHour: { used: 2.18, cap: 14, exceeded: false, resetAt: Date.now() + 3.4 * 3_600_000 },
+      weekly: { used: 2.31, cap: 35, exceeded: false, resetAt: Date.now() + 4.4 * 86_400_000 },
     },
   },
   '/alpha/billing/subscriptions': {
     success: true,
-    data: { planId: 'individual-goat', status: 'active', currentPeriodStart: '2026-08-25T09:08:33.000Z', currentPeriodEnd: '2026-09-25T09:08:33.000Z' },
+    data: { planId: 'individual-goat', status: 'active', currentPeriodStart: PERIOD_START, currentPeriodEnd: PERIOD_END },
   },
 }
 
@@ -395,8 +403,8 @@ console.log('cold start with a snapshot on disk')
       planId: 'individual-goat',
       name: 'GOAT',
       status: 'active',
-      currentPeriodStart: '2026-08-25T09:08:33.000Z',
-      currentPeriodEnd: '2026-09-25T09:08:33.000Z',
+      currentPeriodStart: PERIOD_START,
+      currentPeriodEnd: PERIOD_END,
     },
     monthly: { used: 66.1, remaining: 4.1, cap: 70.2, percent: 94.2, capSuspect: false },
     fiveHour: { used: 1, cap: 14, percent: 7.1, exceeded: false, resetAt: Date.now() + 3_600_000 },
@@ -463,7 +471,7 @@ console.log('a snapshot too old to stand in for the present')
   const snapshotFile = path.join(home, 'dsh-commandcode-quota', 'last-report.json')
   const ancient = {
     fetchedAt: new Date(Date.now() - 7 * 3_600_000).toISOString(),
-    plan: { planId: 'individual-goat', name: 'GOAT', status: 'active', currentPeriodEnd: '2026-09-25T09:08:33.000Z' },
+    plan: { planId: 'individual-goat', name: 'GOAT', status: 'active', currentPeriodEnd: PERIOD_END },
     monthly: { used: 10, remaining: 60, cap: 70, percent: 14.3 },
     fiveHour: { used: 0.5, cap: 14, percent: 3.6, exceeded: false, resetAt: Date.now() + 3_600_000 },
     weekly: { used: 1, cap: 35, percent: 2.9, exceeded: false, resetAt: Date.now() + 86_400_000 },
@@ -499,7 +507,7 @@ console.log('a snapshot that outlives its configuration')
   mkdirSync(path.dirname(snapshotFile), { recursive: true })
   writeFileSync(snapshotFile, JSON.stringify({
     fetchedAt: new Date().toISOString(),
-    plan: { planId: 'individual-goat', name: 'GOAT', status: 'active', currentPeriodEnd: '2026-09-25T09:08:33.000Z' },
+    plan: { planId: 'individual-goat', name: 'GOAT', status: 'active', currentPeriodEnd: PERIOD_END },
     monthly: { used: 68, remaining: 2, cap: 70, percent: 97.1 },
     totals: { requests: 1, successRate: 100 },
     failures: [],
@@ -536,7 +544,7 @@ console.log('a snapshot belonging to a different account')
     fingerprint: 'ffffffffffffffff',
     report: {
       fetchedAt: new Date().toISOString(),
-      plan: { planId: 'individual-max', name: 'Max', status: 'active', currentPeriodEnd: '2026-09-25T09:08:33.000Z' },
+      plan: { planId: 'individual-max', name: 'Max', status: 'active', currentPeriodEnd: PERIOD_END },
       monthly: { used: 5, remaining: 145, cap: 150, percent: 3.3 },
       fiveHour: { used: 1, cap: 30, percent: 3.3, exceeded: false, resetAt: Date.now() + 3_600_000 },
       weekly: { used: 2, cap: 80, percent: 2.5, exceeded: false, resetAt: Date.now() + 86_400_000 },
@@ -639,6 +647,46 @@ console.log('Command Code configured but the key resolves to nothing')
     assert.match(result.error.message, /\[MISSING_CREDENTIAL\]/)
   })
   // The home is a throwaway directory; no cleanup needed.
+}
+
+console.log('the route and the snapshot are owned by the plugin')
+{
+  const home = isolatedHome()
+  stubFetch()
+  const plugin = await loadHostHalf()
+  const { ctx, seen } = makeCtx()
+  let disposed = 0
+  // The real registry hands back a disposer. A registration no effect owns
+  // outlives the plugin and collides with the next one on reload.
+  ctx.connection.fetch.register = (route) => {
+    seen.route = route
+    return () => { disposed += 1 }
+  }
+  plugin.apply(ctx)
+  check('registering the Fetch route through an effect', () => {
+    // Two effects own this plugin's registrations: the route and the /quota
+    // command. Neither may outlive the fiber it was mounted on.
+    assert.equal(seen.effects.length, 2, `effects collected: ${seen.effects.length}`)
+    seen.effects.forEach((dispose) => dispose())
+    assert.equal(disposed, 1)
+  })
+
+  await callRoute(seen.route, 'cc-quota/report', {})
+  const snapshotFile = path.join(home, 'dsh-commandcode-quota', 'last-report.json')
+  check('writing the snapshot in one piece, for its owner only', () => {
+    const dir = path.dirname(snapshotFile)
+    assert.deepEqual(
+      readdirSync(dir).filter((name) => name !== 'last-report.json'),
+      [],
+      'a temp file survived the write, so a reader could have caught it half-written',
+    )
+    // NTFS reports a mode Windows never set, so the permission assertion binds
+    // only where the mode means something.
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(snapshotFile).mode & 0o077, 0, 'the snapshot is readable beyond its owner')
+      assert.equal(statSync(dir).mode & 0o077, 0, 'the snapshot directory is reachable beyond its owner')
+    }
+  })
 }
 
 console.log(`\n${passed} checks passed`)
