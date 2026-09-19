@@ -42,6 +42,9 @@ const KEY_ENV_PATTERN = /command_?code/i;
 /** 判定一个 baseURL 是否指向 Command Code 的官方 API。 */
 const COMMANDCODE_HOST_PATTERN = /(^|\/\/|\.)commandcode\.ai(\/|$)/i;
 
+/** A name that is safe to interpolate into the credential-file pattern. */
+const CREDENTIAL_REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 /**
  * A stable, non-reversible fingerprint of the credential in use.
  *
@@ -119,7 +122,9 @@ const ENDPOINTS = Object.freeze({
 /**
  * 订阅 planId → 展示名与名义月度额度。取自官方 CLI bundle 的 plan map
  * （与 `@mars-sea/dsh-commandcode-provider` 同步自 command-code@1.53.0）。
- * 按前缀最长优先匹配，因此 `individual-pro-v1` 先于 `individual-pro` 命中。
+ * 只按完整 id 匹配：前缀匹配会让未收录的一代（`individual-pro-v2`）继承已收录
+ * 一代的额度（`individual-pro` = 30，真值 80），随后这个偏差会把月度百分比
+ * 否决整整一个计费周期。未收录的 id 没有名义额度，也就没有否决。
  */
 const SUBSCRIPTION_PLANS = Object.freeze({
   'individual-go': { name: 'Go', monthlyCredits: 10 },
@@ -132,7 +137,6 @@ const SUBSCRIPTION_PLANS = Object.freeze({
   'teams-pro': { name: 'Teams Pro', monthlyCredits: 40 },
 });
 
-const PLAN_PREFIXES = Object.keys(SUBSCRIPTION_PLANS).sort((a, b) => b.length - a.length);
 
 /**
  * 数据层对外抛出的唯一错误类型。
@@ -164,8 +168,7 @@ export class QuotaError extends Error {
 export function subscriptionPlanInfo(planId) {
   if (typeof planId !== 'string' || planId === '') return undefined;
   const normalized = planId.toLowerCase().replace(/_/g, '-');
-  const prefix = PLAN_PREFIXES.find((candidate) => normalized.startsWith(candidate));
-  return prefix === undefined ? undefined : SUBSCRIPTION_PLANS[prefix];
+  return Object.hasOwn(SUBSCRIPTION_PLANS, normalized) ? SUBSCRIPTION_PLANS[normalized] : undefined;
 }
 
 /** 有限数字才认，其余（含字符串数字）一律当缺字段。 */
@@ -333,6 +336,13 @@ export function resolveApiKey(options = {}) {
    */
   const resolveRef = (ref) => {
     if (typeof ref !== 'string' || ref === '') return undefined;
+    // `readCredentialRef` interpolates this name into a RegExp. A value that is
+    // not a plain variable name — `.*`, `(a+)+` — would match an unrelated
+    // provider's row and send *that* key to Command Code, or hang the host, so
+    // it is refused rather than quietly matching nothing.
+    if (!CREDENTIAL_REF_PATTERN.test(ref)) {
+      throw new QuotaError('MISSING_CREDENTIAL', `apiKeyEnv 必须是一个环境变量名，而不是 ${JSON.stringify(ref)}`);
+    }
     const fromEnv = env[ref];
     if (typeof fromEnv === 'string' && fromEnv !== '') return { key: fromEnv, source: `环境变量 ${ref}` };
     for (const file of credentialFiles) {
@@ -439,12 +449,16 @@ function parseWindow(block) {
   const used = numberOf(block.used);
   const cap = numberOf(block.cap);
   if (used === undefined && cap === undefined) return undefined;
+  // An idle rolling window answers `resetAt: 0`, which is "no window is running"
+  // rather than an instant at the epoch: rendered as a date it reads
+  // `01-01 08:00`, and as a countdown `0m 后重置` beside a 0% bar.
+  const reset = numberOf(block.resetAt);
   return {
     used,
     cap,
     percent: used !== undefined && cap !== undefined && cap > 0 ? Math.min(100, (used / cap) * 100) : undefined,
     exceeded: block.exceeded === true,
-    resetAt: numberOf(block.resetAt),
+    resetAt: reset === undefined || reset <= 0 ? undefined : reset,
   };
 }
 
@@ -540,21 +554,25 @@ export async function fetchQuotaReport(options = {}) {
     : (await getQuiet(`${apiBase}${ENDPOINTS.subscription}?orgId=${encodeURIComponent(orgId)}`)) ?? subscriptionPlain;
 
   if (failures.length === 4) {
+    // Classify from the statuses actually observed. Requiring all four endpoints
+    // to report one lets a single HTML error page turn a rejected key into
+    // "cannot reach Command Code", sending the user to their network settings.
     const codes = failedStatuses;
-    if (codes.length === 4 && codes.every((status) => status === 401 || status === 403)) {
+    const allObserved = (test) => codes.length > 0 && codes.every(test);
+    if (allObserved((status) => status === 401 || status === 403)) {
       throw new QuotaError('AUTH', 'API key 被拒绝（401）：key 是否已失效或被重置？', { failures });
     }
     // A plan without API access answers 404 on all four endpoints. Reporting
     // that as a network failure sends the user hunting for a connectivity
     // problem that does not exist.
-    if (codes.length === 4 && codes.every((status) => status === 404)) {
+    if (allObserved((status) => status === 404)) {
       throw new QuotaError(
         'NOT_FOUND',
-        '当前套餐不含 API 权限：额度接口全部返回 404。Command Code 除 $1 的 Go 档外都含 API 权限。',
+        '额度接口全部返回 404：当前套餐可能不含 API 权限（Command Code 除 $1 的 Go 档外都含），也可能是 provider 路由指向的不是 Command Code 的接口。',
         { failures },
       );
     }
-    if (codes.length === 4 && codes.every((status) => status >= 500)) {
+    if (allObserved((status) => status >= 500)) {
       throw new QuotaError('SERVICE', 'Command Code 服务端异常（5xx），稍后重试。', { failures });
     }
     throw new QuotaError('NETWORK', `四个端点全部失败：\n  ${failures.join('\n  ')}`, { failures });
@@ -570,6 +588,8 @@ export async function fetchQuotaReport(options = {}) {
 
   const usedCredits = numberOf(usage?.totalCredits);
   const remainingCredits = numberOf(creditData?.monthlyCredits);
+  const freeCredits = numberOf(creditData?.freeCredits);
+  const purchasedCredits = numberOf(creditData?.purchasedCredits);
   const monthlyCap =
     usedCredits !== undefined && remainingCredits !== undefined
       ? usedCredits + remainingCredits
@@ -597,7 +617,12 @@ export async function fetchQuotaReport(options = {}) {
     const nominal = planInfo?.monthlyCredits;
     if (nominal === undefined || nominal <= 0) return false;
     if (monthlyCap === undefined || monthlyCap <= 0) return false;
-    const ratio = monthlyCap / nominal;
+    // `used` totals spend from the plan allowance *and* from free and purchased
+    // credit, so the baseline has to cover all three. Against the allowance
+    // alone, any account that ever bought a top-up looked like a straddled
+    // boundary and lost its monthly percentage for the rest of the period.
+    const baseline = nominal + (freeCredits ?? 0) + (purchasedCredits ?? 0);
+    const ratio = monthlyCap / baseline;
     return ratio < 1 - CAP_TOLERANCE || ratio > 1 + CAP_TOLERANCE;
   })();
   const monthlyPercent =
@@ -659,8 +684,8 @@ export async function fetchQuotaReport(options = {}) {
       // (see the cap-plausibility note above). Consumers must not render the
       // monthly figures as facts while this is set.
       capSuspect,
-      freeCredits: numberOf(creditData?.freeCredits),
-      purchasedCredits: numberOf(creditData?.purchasedCredits),
+      freeCredits,
+      purchasedCredits,
       belowThreshold: creditData?.belowThreshold === true,
       creditThreshold: numberOf(creditData?.creditThreshold),
       periodBasis: stringOf(usage?.periodBasis),

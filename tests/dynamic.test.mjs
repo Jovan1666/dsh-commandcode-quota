@@ -571,4 +571,35 @@ console.log('an account with nothing configured')
   })
 }
 
+console.log('an idle rolling window')
+{
+  await checkAsync('reports no reset instant rather than the epoch', async () => {
+    // The vendor answers `resetAt: 0` while a window has not started. Kept as a
+    // timestamp it renders `01-01 08:00` and `0m 后重置` beside a 0% bar.
+    const idle = await report(sample({ fiveHour: { used: 0, cap: 14, exceeded: false, resetAt: 0 } }))
+    assert.equal(idle.fiveHour.resetAt, undefined)
+    assert.equal(idle.fiveHour.percent, 0)
+    const running = Date.now() + HOUR
+    const live = await report(sample({ fiveHour: { used: 1, cap: 14, exceeded: false, resetAt: running } }))
+    assert.equal(live.fiveHour.resetAt, running)
+  })
+}
+
+console.log('accounts the nominal allowance cannot describe')
+{
+  await checkAsync('a top-up keeps its monthly percentage', async () => {
+    // Spend comes from the allowance and from purchased credit, so judging the
+    // cap against the allowance alone made every top-up account look like a
+    // straddled billing boundary — and cost it the percentage for the period.
+    const topped = await report(sample({ used: 80, remaining: 10, purchasedCredits: 20 }))
+    assert.equal(topped.monthly.capSuspect, false)
+    assert.ok(Math.abs(topped.monthly.percent - 88.9) < 0.1, `percent was ${topped.monthly.percent}`)
+  })
+  await checkAsync('an unlisted plan generation keeps its monthly percentage', async () => {
+    const newer = await report(sample({ planId: 'individual-pro-v2', used: 40, remaining: 40 }))
+    assert.equal(newer.monthly.capSuspect, false)
+    assert.equal(newer.monthly.percent, 50)
+  })
+}
+
 console.log(`\n${passed} checks passed`)

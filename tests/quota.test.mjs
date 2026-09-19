@@ -212,4 +212,32 @@ console.log('plan table covers every published tier')
   })
 }
 
+console.log('a credential reference that is not a variable name')
+{
+  // `apiKeyEnv` is interpolated into the credential-file pattern. A regex
+  // metacharacter there would match the first unrelated row and hand *that*
+  // provider's key to Command Code.
+  const home = makeHome({
+    settings: 'llm-pi-ai:\n  providers:\n    cc:\n      apiKeyEnv: .*\n      api: openai-completions\n      baseURL: https://api.commandcode.ai/provider/v1\n',
+    credentials: 'refs:\n  OTHER_PROVIDER_KEY: sk-not-yours\n',
+  })
+  check('is refused rather than matching another provider key', () => {
+    assert.throws(
+      () => resolveApiKey({ env: {}, home, dshHome: home }),
+      (error) => error.code === 'MISSING_CREDENTIAL' && /apiKeyEnv/.test(error.message),
+    )
+  })
+  rmSync(home, { recursive: true, force: true })
+}
+
+console.log('a plan id the table does not carry')
+{
+  check('matches no entry, so it sets no allowance baseline', () => {
+    // Prefix matching let `individual-pro-v2` inherit `individual-pro`'s 30 and
+    // then veto its own percentage for the whole period.
+    assert.equal(subscriptionPlanInfo('individual-pro-v2'), undefined)
+    assert.equal(subscriptionPlanInfo('individual-goat')?.monthlyCredits, 70)
+  })
+}
+
 console.log(`\n${passed} checks passed`)
