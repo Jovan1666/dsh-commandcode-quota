@@ -343,7 +343,7 @@ console.log('values that move')
   /** Percentages with nothing rounding them, for boundary assertions. */
   const rawIn = (html) => [...html.matchAll(/class="ccq-pct"[^>]*>([^<]*)</g)].map((match) => match[1])
 
-  check('the countdown shrinks to 0m and never goes negative', () => {
+  check('the countdown never goes negative and stops at the reset instant', () => {
     // Mid-minute fixtures on purpose: a countdown computed with `floor` is
     // asserted at 59.5 minutes, not at exactly 59, or a millisecond elapsing
     // between building the fixture and rendering would read as 58m and the
@@ -351,7 +351,13 @@ console.log('values that move')
     const soon = renderReady({ ...GOAT, fiveHour: { ...GOAT.fiveHour, resetAt: Date.now() + 59.5 * 60_000 } })
     const passed = renderReady({ ...GOAT, fiveHour: { ...GOAT.fiveHour, resetAt: Date.now() - 90_000 } })
     assert.match(soon, /59m 后重置/)
-    assert.match(passed, /0m 后重置/)
+    const firstRow = (html) => {
+      const start = html.indexOf('ccq-win"')
+      return html.slice(start, html.indexOf('ccq-win"', start + 1))
+    }
+    // A reset instant that has passed prints no chip on its own row: `0m 后重置`
+    // beside unmoving numbers reads as a frozen card.
+    assert.doesNotMatch(firstRow(passed), /后重置/, 'the expired row keeps no chip')
     assert.doesNotMatch(passed, /-\d+m 后重置/)
   })
 
@@ -618,6 +624,39 @@ console.log('states')
   })
   check('the rail badge stays hidden for a host without Command Code', () => {
     assert.equal(renderCard([false, { phase: 'absent' }], { wide: false }), '')
+  })
+}
+
+console.log('the headline stays readable, and the meter only appears with a number')
+{
+  check('the percentage carries no inline colour', () => {
+    // The state greens are fill colours: near 2.3:1 on a white card, under the
+    // 4.5:1 a 14px headline needs. The meter below carries the same level.
+    const html = renderReady(GOAT)
+    assert.doesNotMatch(html, /ccq-pct[^>]*style=/)
+    assert.match(html, /background:var\(--dsw-alias-state-/, 'the meter still carries the level')
+  })
+  check('a window with no percentage renders no meter', () => {
+    const html = renderReady({ ...GOAT, fiveHour: { ...GOAT.fiveHour, percent: undefined } })
+    const start = html.indexOf('ccq-win"')
+    const row = html.slice(start, html.indexOf('ccq-win"', start + 1))
+    assert.doesNotMatch(row, /ccq-track/, 'a zero-width bar under a dash reads as 0% used')
+    assert.match(row, /ccq-pct[^>]*>—</)
+  })
+  check('the collapsed rail clamps the way the card does', () => {
+    const html = renderCard([false, { phase: 'ready', report: { ...GOAT, fiveHour: { ...GOAT.fiveHour, percent: 107.1 } } }], { wide: false })
+    assert.match(html, />100%</)
+    assert.doesNotMatch(html, />107%/)
+  })
+  check('the collapsed rail promises no click it cannot honour', () => {
+    // The badge is read-only: no handler, no role. A pointer cursor and a hover
+    // fill tell a touch user the opposite.
+    assert.doesNotMatch(SOURCE, /\.ccq-rail\{[^}]*cursor/)
+    assert.doesNotMatch(SOURCE, /\.ccq-rail:hover/)
+  })
+  check('the expanded figures stay selectable', () => {
+    assert.match(SOURCE, /\.ccq-head\{[^}]*user-select:none/)
+    assert.doesNotMatch(SOURCE, /\.ccq-card\{[^}]*user-select/)
   })
 }
 
