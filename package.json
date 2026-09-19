@@ -15,7 +15,9 @@
     "index.js",
     "client.js",
     "quota.mjs",
+    "cli",
     "cordis.patch.yml",
+    "LICENSE",
     "README.md"
   ],
   "license": "MIT",

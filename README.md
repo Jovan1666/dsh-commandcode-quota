@@ -26,29 +26,19 @@ No browser tab, no login, no guessing how much of the plan is left.
 | **Money where it matters** | Used and remaining for the monthly allowance; exact figures for every row on hover |
 | **Instant, then live** | The card is on screen about 2 ms after a restart, and live about a second later |
 | **Quiet when it should be** | No Command Code account? The card does not render at all |
-| **Bilingual** | Follows your DSH interface language (中文 / English) |
+| **Bilingual** | The card follows your DSH interface language (中文 / English) |
 
 Everything is read from **your own account's data** — window count, caps and percentages come from the API, never assumed. Go, GOAT, Pro, Provider, Max and Teams all work; a plan that reports no rolling windows simply renders no rows.
 
 ## Install
 
 ```sh
-# 1. put the package into a profile
 dsh plugin --profile web add github:Jovan1666/dsh-commandcode-quota
 ```
 
-```yaml
-# 2. register the plugin row — append to $DSH_HOME/profiles/web/cordis.patch.yml
-- insert:
-    - id: commandcode-quota
-      name: "dsh-commandcode-quota"
-```
+Then restart `dsh web` and reload the browser page. That is the whole setup — no configuration file, no API key to paste: if Command Code is already a provider in your DSH settings, the plugin finds it.
 
-```sh
-# 3. restart dsh web, then reload the browser page
-```
-
-Then look at the bottom of the sidebar. That is the whole setup — no configuration file, no API key to paste: if Command Code is already a provider in your DSH settings, the plugin finds it.
+The package declares a bundle patch (`dsh.bundle.patch` → its `cordis.patch.yml`), so `dsh plugin add` registers the plugin row for you. **Do not also append that row to your profile's `cordis.patch.yml`.** Two layers inserting the same loader id make dsh refuse to start: `duplicate loader entry id: commandcode-quota`. The row belongs to the manual install below, where no bundle layer exists.
 
 <details>
 <summary>Other ways to install, and how to remove it</summary>
@@ -60,19 +50,29 @@ git clone https://github.com/Jovan1666/dsh-commandcode-quota
 dsh plugin --profile web add ./dsh-commandcode-quota
 ```
 
-**Manually, without pnpm** — link the folder into the profile's `node_modules` and add the same `cordis.patch.yml` row as above:
+**Manually, without pnpm** — link the folder into the profile's `node_modules`, then register the row yourself, since nothing else will:
+
+```yaml
+# $DSH_HOME/profiles/web/cordis.patch.yml
+- insert:
+    - id: commandcode-quota
+      name: "dsh-commandcode-quota"
+```
+
+A freshly created profile ends that file with `[]`. **Replace the `[]`** — appending a sequence under it is not valid YAML, and the profile will not load.
 
 ```sh
-# macOS / Linux
-ln -s "$PWD/dsh-commandcode-quota" "$DSH_HOME/profiles/web/node_modules/dsh-commandcode-quota"
+# macOS / Linux  ($DSH_HOME defaults to $HOME/.dsh)
+ln -s "$PWD/dsh-commandcode-quota" "${DSH_HOME:-$HOME/.dsh}/profiles/web/node_modules/dsh-commandcode-quota"
 ```
 
 ```powershell
-# Windows
-New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-commandcode-quota" -Target "$PWD\dsh-commandcode-quota"
+# Windows  ($env:DSH_HOME defaults to $env:USERPROFILE\.dsh)
+$dsh = if ($env:DSH_HOME) { $env:DSH_HOME } else { "$env:USERPROFILE\.dsh" }
+New-Item -ItemType Junction -Path "$dsh\profiles\web\node_modules\dsh-commandcode-quota" -Target "$PWD\dsh-commandcode-quota"
 ```
 
-**To remove it:** delete the `cordis.patch.yml` row, drop the package from the profile, restart `dsh web`. To clear the cached snapshot too, delete `$DSH_HOME/dsh-commandcode-quota/`.
+**To remove it:** `dsh plugin --profile web remove dsh-commandcode-quota` drops the package and the bundle layer that registers it; a manual install instead deletes the `cordis.patch.yml` row. Restart `dsh web` either way. To clear the cached snapshot too, delete `$DSH_HOME/dsh-commandcode-quota/`.
 
 </details>
 
@@ -128,11 +128,12 @@ Monthly 99.8% used · $70.11 / $70.23 · $0.11 left · resets in 7d22h
 18,087 requests · 100% success · in 3.49B / out 16.77M
 ```
 
-It reads the same cached report the card does, so a slash invocation costs no extra upstream requests — and unlike the card, it never answers from a stale snapshot: typing a command means asking for the current numbers.
+It reads the same cached report the card does, so a slash invocation costs no extra upstream requests — and unlike the card, it never answers from a stale snapshot: typing a command means asking for the current numbers. Its text is English; the card is the bilingual surface.
 
 ## Requirements
 
 - **DeepSeek Harness** `^0.1.5-rc.1`. The plugin uses framework seams that are not a stable public API yet; see [Compatibility](#compatibility).
+- The **web** profile. The card mounts into the browser sidebar through the `connection` service, which only the web app composes — a headless or CLI profile has nowhere to put it.
 - A **Command Code** account with API access. Every plan except the `$1` **Go** tier includes it; see [Getting a Command Code plan](#getting-a-command-code-plan).
 - Node.js 18+ — only for the optional CLI and the development scripts.
 

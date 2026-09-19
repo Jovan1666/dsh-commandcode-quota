@@ -26,29 +26,19 @@
 | **钱只在要紧的地方** | 月度额度给出已用与剩余金额；每一行的精确数字悬停可见 |
 | **先出现，再实时** | 重启后约 **2ms** 卡片就在屏幕上，约 1 秒后换成实时值 |
 | **该消失时消失** | 没配 Command Code 的机器上，卡片完全不渲染 |
-| **中英双语** | 跟随 DSH 界面语言 |
+| **中英双语** | 卡片跟随 DSH 界面语言 |
 
 卡片上的一切都来自**你自己账号的数据**——窗口数量、上限、百分比都是接口读出来的，不做假设。Go / GOAT / Pro / Provider / Max / Teams 都适用；接口没上报滚动窗口的套餐，就不画那几行。
 
 ## 安装
 
 ```sh
-# 1. 把包装进 profile
 dsh plugin --profile web add github:Jovan1666/dsh-commandcode-quota
 ```
 
-```yaml
-# 2. 注册插件行 —— 追加到 $DSH_HOME/profiles/web/cordis.patch.yml
-- insert:
-    - id: commandcode-quota
-      name: "dsh-commandcode-quota"
-```
+然后重启 `dsh web`、刷新浏览器页面。设置就这么多——没有配置文件、不用填 API key：只要 Command Code 已经是你 DSH 设置里的一个 provider，插件自己会找到它。
 
-```sh
-# 3. 重启 dsh web，然后刷新浏览器页面
-```
-
-然后看侧边栏底部。设置就这么多——没有配置文件、不用填 API key：只要 Command Code 已经是你 DSH 设置里的一个 provider，插件自己会找到它。
+包里声明了 bundle patch（`dsh.bundle.patch` → 仓库根的 `cordis.patch.yml`），所以 `dsh plugin add` 已经替你注册了插件行。**不要再把那行追加到 profile 自己的 `cordis.patch.yml` 里**：两层插入同一个 loader id，dsh 会直接拒绝启动，报 `duplicate loader entry id: commandcode-quota`。那一行属于下面的手动安装方式——那种装法没有 bundle 层。
 
 <details>
 <summary>其它安装方式，以及怎么卸载</summary>
@@ -60,19 +50,29 @@ git clone https://github.com/Jovan1666/dsh-commandcode-quota
 dsh plugin --profile web add ./dsh-commandcode-quota
 ```
 
-**不用 pnpm 的手动安装** —— 把目录链接进 profile 的 `node_modules`，再加上面那段 `cordis.patch.yml` 行：
+**不用 pnpm 的手动安装** —— 把目录链接进 profile 的 `node_modules`，然后自己注册那一行（没人替你注册）：
+
+```yaml
+# $DSH_HOME/profiles/web/cordis.patch.yml
+- insert:
+    - id: commandcode-quota
+      name: "dsh-commandcode-quota"
+```
+
+新建的 profile，这个文件末尾是一个 `[]`。**要把 `[]` 替换掉**——在 `[]` 后面追加序列不是合法 YAML，profile 会加载失败。
 
 ```sh
-# macOS / Linux
-ln -s "$PWD/dsh-commandcode-quota" "$DSH_HOME/profiles/web/node_modules/dsh-commandcode-quota"
+# macOS / Linux  （$DSH_HOME 默认是 $HOME/.dsh）
+ln -s "$PWD/dsh-commandcode-quota" "${DSH_HOME:-$HOME/.dsh}/profiles/web/node_modules/dsh-commandcode-quota"
 ```
 
 ```powershell
-# Windows
-New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-commandcode-quota" -Target "$PWD\dsh-commandcode-quota"
+# Windows  （$env:DSH_HOME 默认是 $env:USERPROFILE\.dsh）
+$dsh = if ($env:DSH_HOME) { $env:DSH_HOME } else { "$env:USERPROFILE\.dsh" }
+New-Item -ItemType Junction -Path "$dsh\profiles\web\node_modules\dsh-commandcode-quota" -Target "$PWD\dsh-commandcode-quota"
 ```
 
-**卸载**：删掉 `cordis.patch.yml` 里那一行、把包从 profile 里移除、重启 `dsh web`。想连缓存快照一起清掉，就删 `$DSH_HOME/dsh-commandcode-quota/`。
+**卸载**：`dsh plugin --profile web remove dsh-commandcode-quota`——包和注册它的 bundle 层一起没；手动安装的则删掉 `cordis.patch.yml` 里那一行。两种都要重启 `dsh web`。想连缓存快照一起清掉，就删 `$DSH_HOME/dsh-commandcode-quota/`。
 
 </details>
 
@@ -128,11 +128,12 @@ Monthly 99.8% used · $70.11 / $70.23 · $0.11 left · resets in 7d22h
 18,087 requests · 100% success · in 3.49B / out 16.77M
 ```
 
-它读的正是卡片那份缓存报告，所以多敲一次命令不会多打上游接口——而且和卡片不同，它**从不**用磁盘快照作答：敲命令就是要当前数字。
+它读的正是卡片那份缓存报告，所以多敲一次命令不会多打上游接口——而且和卡片不同，它**从不**用磁盘快照作答：敲命令就是要当前数字。它的输出是英文，双语的是卡片。
 
 ## 环境要求
 
 - **DeepSeek Harness** `^0.1.5-rc.1`。插件依赖若干尚未稳定的框架内部接缝，见[兼容性](#兼容性)。
+- **web** profile。卡片要通过 `connection` 服务挂进浏览器侧边栏，而这个服务只有 web 应用会装配——headless 或 CLI profile 没有地方放它。
 - 一个**有 API 权限**的 Command Code 账号（除 $1 的 **Go** 档外都包含），见[套餐与订阅](#套餐与订阅)。
 - Node.js 18+ —— 只有可选的命令行工具和开发脚本需要。
 
