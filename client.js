@@ -151,10 +151,13 @@ window.__ModuleLoader__.load({
 .ccq-card{box-sizing:border-box;width:100%;margin:0 0 6px;padding:11px 13px 12px;border-radius:12px;
   border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-button-elevated-fill);
   color:var(--dsw-alias-label-primary);font-family:inherit;text-align:left;
-  cursor:pointer;-webkit-user-select:none;user-select:none}
+  cursor:pointer}
 .ccq-card:hover{background:var(--dsw-alias-button-floating-hover)}
 .ccq-card.ccq-stale{opacity:.62}
+/* Selection stays off the toggle target only: a drag across the header should not
+   read as a click, while the expanded figures must remain copyable into a ticket. */
 .ccq-head{display:flex;align-items:center;gap:6px;padding-bottom:8px;margin-bottom:10px;
+  -webkit-user-select:none;user-select:none;
   border-bottom:1px solid var(--dsw-alias-border-l1)}
 .ccq-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-size:13px;font-weight:600;line-height:18px}
@@ -194,8 +197,7 @@ window.__ModuleLoader__.load({
 .ccq-error{font-size:12px;line-height:18px;color:var(--dsw-alias-state-error-primary)}
 .ccq-rail{box-sizing:border-box;width:36px;height:36px;border-radius:50%;display:flex;
   align-items:center;justify-content:center;font-size:12px;font-weight:600;
-  font-variant-numeric:tabular-nums;border:none;background:transparent;cursor:pointer}
-.ccq-rail:hover{background:var(--dsw-alias-interactive-bg-hover)}
+  font-variant-numeric:tabular-nums;border:none;background:transparent}
 `
 
     /** Inject the panel stylesheet once per document. */
@@ -271,8 +273,11 @@ window.__ModuleLoader__.load({
     /** Terse countdown for the row chip: `59m`, `3h25m`, `6d9h`. */
     function shortCountdown(timestamp) {
       if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) return undefined
+      // A reset instant that has already passed leaves nothing to count down to.
+      // `0m 后重置` beside unmoving numbers reads as a frozen card, so the chip
+      // goes away; the tooltip still carries the absolute instant.
       const minutes = Math.floor((timestamp - Date.now()) / 60_000)
-      if (minutes <= 0) return '0m'
+      if (minutes <= 0) return undefined
       if (minutes < 60) return `${minutes}m`
       const hours = Math.floor(minutes / 60)
       if (hours < 24) return `${hours}h${minutes % 60}m`
@@ -482,7 +487,6 @@ window.__ModuleLoader__.load({
         // only carries the countdown.
         row.resetAt === undefined ? undefined : when(row.resetAt),
       ].filter((part) => part !== undefined)
-      const fill = Math.max(0, Math.min(100, percent ?? 0))
       const chip = row.exceeded ? t('overLimit') : countdown === undefined ? undefined : format(t('reset'), { time: countdown })
       // Each row carries its own tooltip: exact amounts, remaining credit, and
       // the absolute reset instant, none of which cost a line in the sidebar.
@@ -491,10 +495,18 @@ window.__ModuleLoader__.load({
           h('span', { className: 'ccq-winlabel' }, t(row.label)),
           h('span', { className: 'ccq-spacer' }),
           chip === undefined ? null : h('span', { className: 'ccq-reset' }, chip),
-          h('span', { className: 'ccq-pct', style: { color } }, headlinePercent(percent)),
+          // The number keeps the card's text colour. The state greens and ambers
+          // are fill colours — on a white card the green lands near 2.3:1, under
+          // the 4.5:1 a 14px headline needs — and the meter below shows the level.
+          h('span', { className: 'ccq-pct' }, headlinePercent(percent)),
         ),
-        h('div', { className: 'ccq-track' },
-          h('span', { className: 'ccq-fill', style: { width: `${fill}%`, background: color } }),
+        // A zero-width meter under `—` reads as "0% used", so no percentage means
+        // no meter.
+        percent === undefined ? null : h('div', { className: 'ccq-track' },
+          h('span', {
+            className: 'ccq-fill',
+            style: { width: `${Math.max(0, Math.min(100, percent))}%`, background: color },
+          }),
         ),
       )
     }
@@ -596,9 +608,11 @@ window.__ModuleLoader__.load({
       if (state.report === undefined) return null
       const rows = windowsOf(state.report)
       // The most constrained window, not the shortest one: a collapsed rail has
-      // room for a single number and the alarming one is the useful one.
+      // room for a single number and the alarming one is the useful one. Rounded
+      // before comparing, so two rows that both read `60%` cannot make the badge
+      // flip colour between refreshes.
       const headline = rows.reduce(
-        (worst, row) => (worst === undefined || (row.percent ?? 0) > (worst.percent ?? 0) ? row : worst),
+        (worst, row) => (worst === undefined || Math.round(row.percent ?? 0) > Math.round(worst.percent ?? 0) ? row : worst),
         undefined,
       )
       if (headline === undefined) return null
@@ -606,7 +620,7 @@ window.__ModuleLoader__.load({
         className: 'ccq-rail',
         title: summaryTitle(rows, t),
         style: { color: levelToken(headline.percent) },
-      }, `${(headline.percent ?? 0).toFixed(0)}%`)
+      }, headlinePercent(headline.percent))
     }
 
     /** The sidebar-foot card. */
