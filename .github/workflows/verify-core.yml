@@ -1,0 +1,29 @@
+# 校验「同步产物」没有被就地改动。
+#
+# 本仓库的实现与测试由 monorepo 分发而来（见仓库根的 .sync-source.json）。
+# 就地改副本会在下次同步时被静默覆盖，所以这里让它直接变成一次红构建。
+#
+# 这个文件本身也是分发产物，改它没有意义：要改就改 monorepo 里的
+# scripts/templates/verify-core.yml。
+name: Verify synced sources
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      # 固定到提交而不是可变的 major 标签。
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '18'
+      - name: 同步产物是否被就地改动
+        run: node scripts/verify-core.mjs
