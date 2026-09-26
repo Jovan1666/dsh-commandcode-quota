@@ -45,9 +45,20 @@ and the cordis loader id, not a document version, so it does not move.
   `https://github.com/Jovan1666/dsh-commandcode-quota` — in `package.json`, the
   READMEs and the bundle patch's comment. The package name and the loader id are
   untouched.
-- **The READMEs install from this repository**: `git clone
-  https://github.com/Jovan1666/dsh-commandcode-quota`, then
-  `dsh plugin --profile web add ./dsh-commandcode-quota`.
+- **The READMEs install from this repository.** The one-line install is
+  `dsh plugin --profile web add github:Jovan1666/dsh-commandcode-quota`; the
+  clone-based and the fully manual installs stay in the collapsed section.
+
+### Fixed
+
+- **Three documentation defects that came in with the merge.**
+  The install block repeated the collapsed "From a local clone" section verbatim,
+  so the one-line `github:` install is the primary again. The English README
+  carried a whole Chinese section (`## 先确认 dsh 版本`) plus Chinese window labels
+  in its table, while the Chinese README had that section missing entirely — it is
+  now present in both languages. And the Chinese README listed the `$1` **Go** tier
+  as supported, contradicting both the English text and the rest of the Chinese
+  file, which say it has no API access.
 
 ### Kept
 
