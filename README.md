@@ -31,30 +31,28 @@ No browser tab, no login, no guessing how much of the plan is left.
 
 Everything is read from **your own account's data** — window count, caps and percentages come from the API, never assumed. GOAT, Pro, Provider, Max and Teams work; a plan that reports no rolling windows simply renders no rows. (The $1 **Go** tier is the exception — it has no API access, so the card has nothing to render there.)
 
-## 先确认 dsh 版本
+## Check your dsh version first
 
-**本插件要求 dsh `^0.1.5-rc.1`。** 版本不够的话启动会直接崩：
+**This plugin needs dsh `^0.1.5-rc.1`.** On anything older it crashes at startup:
 
 ```
 Error: failed to apply loader entry commandcode-quota:
 Cannot read properties of undefined (reading 'register')
 ```
 
-因为 `ctx.connection.fetch` 这个 seam 在旧版本里不存在。查一下再装：
+The `ctx.connection.fetch` seam it relies on does not exist in older releases. Check before you install:
 
 ```sh
-dsh --version          # 需要 0.1.5-rc.1 或更高
+dsh --version          # needs 0.1.5-rc.1 or newer
 npm i -g @deepseek-ai/dsh@latest
 ```
 
-注意：插件的 141 项离线校验**跑得过**也不需要这个版本——那些校验不启动 dsh。
-所以"校验全绿"不代表装上去能用。
+Note that the plugin's 141 offline checks also **pass** on an older dsh — they never start dsh. So "the checks are green" does not mean it will work once installed.
 
 ## Install
 
 ```sh
-git clone https://github.com/Jovan1666/dsh-commandcode-quota
-dsh plugin --profile web add ./dsh-commandcode-quota
+dsh plugin --profile web add github:Jovan1666/dsh-commandcode-quota
 ```
 
 Then restart `dsh web` and reload the browser page. That is the whole setup — no configuration file, no API key to paste: if Command Code is already a provider in your DSH settings, the plugin finds it.
@@ -117,9 +115,9 @@ Two things make the difference:
 
 | Window | What it means | On GOAT |
 |---|---|---|
-| **5 小时** | Rolling burst limit — one long session cannot drain the month | `$14` |
-| **每周** | Rolling 7-day limit | `$35` |
-| **月度** | The billing period's credit allowance | `$70` |
+| **5-hour** | Rolling burst limit — one long session cannot drain the month | `$14` |
+| **Weekly** | Rolling 7-day limit | `$35` |
+| **Monthly** | The billing period's credit allowance | `$70` |
 
 Each row shows the **used percentage** (green below 60 %, amber below 85 %, red above), a meter in the same colour, and a **reset countdown** (`59m`, `6d9h`, `8d1h`). Click the card for the monthly allowance in money, the remaining credit, the request count and the token totals. Collapse the sidebar and the card becomes a 36 px badge showing the **most constrained** window.
 

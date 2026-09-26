@@ -29,13 +29,31 @@
 | **该消失时消失** | 没配 Command Code 的机器上，卡片完全不渲染 |
 | **中英双语** | 卡片跟随 DSH 界面语言 |
 
-卡片上的一切都来自**你自己账号的数据**——窗口数量、上限、百分比都是接口读出来的，不做假设。Go / GOAT / Pro / Provider / Max / Teams 都适用；接口没上报滚动窗口的套餐，就不画那几行。
+卡片上的一切都来自**你自己账号的数据**——窗口数量、上限、百分比都是接口读出来的，不做假设。GOAT、Pro、Provider、Max、Teams 都适用；接口没上报滚动窗口的套餐，就不画那几行。（$1 的 **Go** 档是例外——它没有 API 权限，卡片在那里没有东西可画。）
+
+## 先确认 dsh 版本
+
+**本插件要求 dsh `^0.1.5-rc.1`。** 版本不够的话启动会直接崩：
+
+```
+Error: failed to apply loader entry commandcode-quota:
+Cannot read properties of undefined (reading 'register')
+```
+
+因为 `ctx.connection.fetch` 这个 seam 在旧版本里不存在。查一下再装：
+
+```sh
+dsh --version          # 需要 0.1.5-rc.1 或更高
+npm i -g @deepseek-ai/dsh@latest
+```
+
+注意：插件的 141 项离线校验**跑得过**也不需要这个版本——那些校验不启动 dsh。
+所以「校验全绿」不代表装上去能用。
 
 ## 安装
 
 ```sh
-git clone https://github.com/Jovan1666/dsh-commandcode-quota
-dsh plugin --profile web add ./dsh-commandcode-quota
+dsh plugin --profile web add github:Jovan1666/dsh-commandcode-quota
 ```
 
 然后重启 `dsh web`、刷新浏览器页面。设置就这么多——没有配置文件、不用填 API key：只要 Command Code 已经是你 DSH 设置里的一个 provider，插件自己会找到它。
