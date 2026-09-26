@@ -329,7 +329,9 @@ function dshConfigFiles(dshHome, home) {
       // 没有 profiles/ 目录的部署（纯 CLI、headless）走不到这里，属正常情况。
       continue;
     }
-    for (const entry of entries.toSorted((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+    // Array.prototype.toSorted 要 Node 20+，而 CI 矩阵含 Node 18：排序副本而不是原地排。
+    const ordered = [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const entry of ordered) {
       // Junction / symlink 也要收：Windows 上的 profile 可能是链接出来的。
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
       files.push(path.join(profilesDir, entry.name, 'cordis.patch.yml'));
