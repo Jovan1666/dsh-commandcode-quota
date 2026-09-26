@@ -1,0 +1,59 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ${{ matrix.os }} · node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 三个平台都跑：插件要处理 Windows 的路径分隔符与批处理、macOS 的
+        # 行尾、Linux 的 CI 环境，只在 Linux 上绿过不等于能用。
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: ['18', '22']
+
+    steps:
+      # 固定到提交，不用可变的 major 标签：标签能被改指，提交不能。
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: ${{ matrix.node }}
+
+      # 组件测试和预览页都要 react/react-dom；仓库根那份 .gitignore 不提交它。
+      - name: 组件测试需要的 React
+        shell: bash
+        run: |
+          mkdir -p .devdeps && cd .devdeps
+          echo '{"name":"devdeps","private":true}' > package.json
+          npm install --no-audit --no-fund react@18 react-dom@18
+
+      # 141 项离线校验：不联网、不需要真实凭证，也不启动 dsh。
+      - name: 离线套件
+        run: node scripts/verify.mjs
+
+      # 发布检查：静态检查 + 密钥/个人路径扫描 + 包身份一致性，然后重跑上面那套
+      # （一条命令就是本地和 CI 的同一套判定，多跑一遍很便宜）。
+      - name: 发布检查
+        run: node scripts/check.mjs
+
+      # 不打网络的冒烟：--help 必须退出 0 并列出参数，未知参数必须非 0 退出。
+      # 真正查额度要凭证要联网，CI 上不跑。
+      - name: 离线冒烟（CLI）
+        shell: bash
+        run: |
+          node cli/cli.mjs --help
+          node cli/cli.mjs --help | grep -q -- '--json'
+          if node cli/cli.mjs --definitely-not-a-flag; then
+            echo "未知参数应当以非 0 退出"
+            exit 1
+          fi
