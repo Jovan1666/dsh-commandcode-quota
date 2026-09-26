@@ -11,7 +11,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -294,11 +294,57 @@ export function discoverRoutes(text) {
 }
 
 /**
+ * DSH 用户设置的候选文件，按"先常规后特例"的顺序。
+ *
+ * 两个位置都要看，因为两种 DSH 把设置放在不同的地方：
+ *
+ * 1. `$DSH_HOME/settings.yaml` —— CLI（`dsh`、`dsh web`）的常规位置，由
+ *    `dsh-settings-file` 直接读写。
+ * 2. `cordis.patch.yml` —— **桌面端（Electron）不用 settings.yaml**：它首次启动会把
+ *    那个文件迁移成 `settings.yaml.imported`，之后用户设置只写进补丁层
+ *    （`$DSH_HOME/cordis.patch.yml` 是全局层，`$DSH_HOME/profiles/<name>/cordis.patch.yml`
+ *    是每个 profile 的用户层）。
+ *
+ * 补丁文件用的是同一套 YAML 形状（provider 路由的 `apiKeyEnv` 与 `baseURL` 仍是同级
+ * 兄弟行，只是整体多缩进一层 `config:`），所以 {@link discoverRoutes} 的缩进扫描对两者
+ * 都成立，这里只需要把路径补全。漏掉第 2 种会让桌面端用户得到
+ * `configured: false`：卡片静默不渲染，且没有任何报错可查。
+ *
+ * @param {string} dshHome DSH 数据目录。
+ * @param {string} home 用户主目录。
+ * @returns {string[]} 去重后的候选文件绝对路径。
+ */
+function dshConfigFiles(dshHome, home) {
+  const fallback = path.join(home, '.dsh');
+  const roots = dshHome === fallback ? [dshHome] : [dshHome, fallback];
+  const files = [];
+  for (const root of roots) {
+    files.push(path.join(root, 'settings.yaml'));
+    files.push(path.join(root, 'cordis.patch.yml'));
+    const profilesDir = path.join(root, 'profiles');
+    let entries;
+    try {
+      entries = readdirSync(profilesDir, { withFileTypes: true });
+    } catch {
+      // 没有 profiles/ 目录的部署（纯 CLI、headless）走不到这里，属正常情况。
+      continue;
+    }
+    for (const entry of entries.toSorted((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      // Junction / symlink 也要收：Windows 上的 profile 可能是链接出来的。
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+      files.push(path.join(profilesDir, entry.name, 'cordis.patch.yml'));
+    }
+  }
+  return [...new Set(files)];
+}
+
+/**
  * 按固定优先级解析 API key，并回报来源，便于排查"为什么读不到 key"。
  *
  * 顺序：
  * 1. 显式传入（命令行 `--key`）
- * 2. **从 DSH 设置里发现**的 Command Code 路由：先取路由上的字面 `apiKey`，再按它的
+ * 2. **从 DSH 设置里发现**的 Command Code 路由（`settings.yaml` 与补丁层都会看，见
+ *    {@link dshConfigFiles}）：先取路由上的字面 `apiKey`，再按它的
  *    `apiKeyEnv` 去环境变量和 `$DSH_HOME/.credentials.yaml` 的 `refs` 里找
  * 3. 环境变量：通用名字列表 → 名字里含 `commandcode` 的任意变量
  * 4. `$DSH_HOME/.credentials.yaml` / `~/.dsh/.credentials.yaml` 的固定名字
@@ -321,10 +367,7 @@ export function resolveApiKey(options = {}) {
   const home = options.home ?? os.homedir();
   const dshHome = options.dshHome ?? env.DSH_HOME ?? path.join(home, '.dsh');
   const names = options.keyNames ?? KEY_ENV_NAMES;
-  const settingsFiles = [
-    path.join(dshHome, 'settings.yaml'),
-    path.join(home, '.dsh', 'settings.yaml'),
-  ];
+  const settingsFiles = dshConfigFiles(dshHome, home);
   const credentialFiles = [
     path.join(dshHome, '.credentials.yaml'),
     path.join(home, '.dsh', '.credentials.yaml'),

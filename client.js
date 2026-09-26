@@ -61,6 +61,19 @@ window.__ModuleLoader__.load({
      * actually looking at the card.
      */
     const REVALIDATE_MS = 3_000
+    /**
+     * Cadence while the host answers `configured: false` — it has no Command Code
+     * provider, so the card stays invisible but still looks again, slowly.
+     *
+     * The alternative (never asking again) turns a fixable configuration gap into
+     * a permanent one: a provider added after this component mounted — the
+     * desktop app's first-run migration of `settings.yaml`, a settings edit, a
+     * profile switch — would leave the card hidden for the rest of the session,
+     * with nothing in the UI to explain why, since an absent card renders no
+     * error either. Five minutes costs one local IPC round trip when the host
+     * really does not use Command Code.
+     */
+    const ABSENT_MS = 5 * 60_000
     /** Used percentage at which a window counts as "hot" for polling purposes. */
     const HOT_PERCENT = 85
     /**
@@ -441,8 +454,10 @@ window.__ModuleLoader__.load({
                 }
                 const value = result.value
                 if (value !== null && typeof value === 'object' && value.configured === false) {
-                  // This host does not use Command Code: stay invisible.
+                  // This host does not use Command Code: stay invisible, but ask
+                  // again on a slow cadence rather than never — see ABSENT_MS.
                   setState({ phase: 'absent' })
+                  timer = window.setTimeout(load, ABSENT_MS)
                   return
                 }
                 setState({ phase: 'ready', report: value, at: Date.now() })

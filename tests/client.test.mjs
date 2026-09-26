@@ -592,6 +592,13 @@ console.log('polling cadence follows the state that matters')
   await checkAsync('a snapshot is chased quickly, once', async () => {
     assert.equal(await pollDelayFor({ ...GOAT, stale: true, staleAgeMs: 45_000 }), 3_000)
   })
+
+  await checkAsync('a host without Command Code looks again, slowly', async () => {
+    // Staying invisible is right; staying invisible *forever* is what turned a
+    // fixable gap into a silent one — the desktop app migrating settings.yaml
+    // away was found only by hand, minutes after the config was already good.
+    assert.equal(await pollDelayFor({ configured: false, reason: 'no-commandcode-provider' }), 300_000)
+  })
 }
 
 console.log('states')
