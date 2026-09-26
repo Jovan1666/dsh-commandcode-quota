@@ -47,7 +47,7 @@ dsh --version          # 需要 0.1.5-rc.1 或更高
 npm i -g @deepseek-ai/dsh@latest
 ```
 
-注意：插件的 141 项离线校验**跑得过**也不需要这个版本——那些校验不启动 dsh。
+注意：插件的 146 项离线校验**跑得过**也不需要这个版本——那些校验不启动 dsh。
 所以「校验全绿」不代表装上去能用。
 
 ## 安装
@@ -300,7 +300,7 @@ key: $DSH_HOME/.credentials.yaml → refs.COMMAND_CODE_GOAT_API_KEY
 # 1. React 只有组件测试和预览页需要
 mkdir .devdeps && cd .devdeps && npm init -y && npm install react@18 react-dom@18 && cd ..
 
-# 2. 一次跑完全部 —— 141 项，一个结论，不碰网络也不读真实凭据
+# 2. 一次跑完全部 —— 146 项，一个结论，不碰网络也不读真实凭据
 node scripts/check.mjs            # 发布检查：静态检查 + 密钥扫描 + 下面全部套件
 node scripts/verify.mjs           # 加 --live 会额外打真实账号
 node scripts/verify.mjs --quiet   # 每个套件只打一行汇总

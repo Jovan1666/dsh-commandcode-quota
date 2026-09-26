@@ -194,6 +194,71 @@ console.log('credential resolution follows the user config, not our naming')
   })
 }
 
+console.log('a desktop (Electron) host keeps its config in a patch layer, not settings.yaml')
+{
+  // The desktop app migrates `settings.yaml` to `settings.yaml.imported` on first
+  // run and writes user settings into the patch layers from then on. Reading only
+  // `settings.yaml` made every desktop install answer `configured: false`, and the
+  // card then stayed invisible with nothing in the UI to diagnose.
+  const PATCH_ONE_ROUTE = `- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      command-code-goat:
+        displayName: my command code
+        apiKeyEnv: MY_CUSTOM_KEY
+        api: openai-completions
+        baseURL: https://api.commandcode.ai/provider/v1
+        models:
+          - id: deepseek/deepseek-v4-flash
+            name: DeepSeek V4 Flash
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: command-code-goat
+`
+
+  check('the patch shape yields the same route fields as settings.yaml', () => {
+    const routes = discoverRoutes(PATCH_ONE_ROUTE)
+    assert.equal(routes.length, 1)
+    assert.equal(routes[0].baseURL, 'https://api.commandcode.ai/provider/v1')
+    assert.equal(routes[0].keyRef, 'MY_CUSTOM_KEY')
+  })
+  check('discovers the route from profiles/<name>/cordis.patch.yml', () => {
+    const home = makeHome({ credentials: 'version: 1\nrefs:\n  MY_CUSTOM_KEY: user_from_patch\n' })
+    const dir = path.join(home, 'profiles', 'desktop')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, 'cordis.patch.yml'), PATCH_ONE_ROUTE, 'utf8')
+    const hit = resolveApiKey({ env: {}, dshHome: home, home: NO_HOME })
+    assert.equal(hit.key, 'user_from_patch')
+    // The route was found in the patch: without it the lookup would have fallen
+    // through to the generic names and failed outright.
+    assert.equal(hit.apiBase, 'https://api.commandcode.ai')
+    assert.match(hit.source, /refs\.MY_CUSTOM_KEY/)
+    rmSync(home, { recursive: true, force: true })
+  })
+  check('discovers the route from the home-level cordis.patch.yml', () => {
+    const home = makeHome({ credentials: 'version: 1\nrefs:\n  MY_CUSTOM_KEY: user_from_home_patch\n' })
+    writeFileSync(path.join(home, 'cordis.patch.yml'), PATCH_ONE_ROUTE, 'utf8')
+    const hit = resolveApiKey({ env: {}, dshHome: home, home: NO_HOME })
+    assert.equal(hit.key, 'user_from_home_patch')
+    assert.equal(hit.apiBase, 'https://api.commandcode.ai')
+    rmSync(home, { recursive: true, force: true })
+  })
+  check('settings.yaml still wins when both carry a route', () => {
+    const home = makeHome({
+      settings: SETTINGS_ONE_ROUTE,
+      credentials: 'version: 1\nrefs:\n  MY_CUSTOM_KEY: user_from_settings\n  PATCH_KEY: user_from_patch\n',
+    })
+    const dir = path.join(home, 'profiles', 'desktop')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, 'cordis.patch.yml'), PATCH_ONE_ROUTE.replace('MY_CUSTOM_KEY', 'PATCH_KEY'), 'utf8')
+    const hit = resolveApiKey({ env: {}, dshHome: home, home: NO_HOME })
+    assert.equal(hit.key, 'user_from_settings')
+    rmSync(home, { recursive: true, force: true })
+  })
+}
+
 console.log('plan table covers every published tier')
 {
   check('resolves each shipped planId, longest prefix first', () => {

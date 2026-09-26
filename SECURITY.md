@@ -22,7 +22,7 @@ disclosure until a fix is out.
 
 | | |
 |---|---|
-| **Reads** | Your DSH config — `$DSH_HOME/settings.yaml` for provider routes and `$DSH_HOME/.credentials.yaml` for credential references — plus the official CLI's login state at `~/.commandcode/auth.json`, and the credential environment variables listed below. Nothing else. |
+| **Reads** | Your DSH config — the provider routes in `$DSH_HOME/settings.yaml` or a patch layer (`$DSH_HOME/cordis.patch.yml`, `$DSH_HOME/profiles/<name>/cordis.patch.yml`), and `$DSH_HOME/.credentials.yaml` for credential references — plus the official CLI's login state at `~/.commandcode/auth.json`, and the credential environment variables listed below. Nothing else. |
 | **Writes** | One file: the last-report snapshot at `$DSH_HOME/dsh-commandcode-quota/last-report.json` (directory `0700`, file `0600`). It holds the figures the card shows and a short, non-reversible digest of the key, so the plugin can tell whether the snapshot belongs to the account currently configured. The key itself is never in it. Delete the file any time; the plugin recreates it. |
 | **Sends** | HTTPS to `https://api.commandcode.ai` with **your own** key. No other host appears in the code. |
 | **Collects** | Nothing. No telemetry, no analytics, no error reporting, no identifiers. |
@@ -61,8 +61,10 @@ Your Command Code key is discovered in this order, and used for nothing except t
 `Authorization` header of the four requests above:
 
 1. An explicitly passed key — the CLI's `--key`.
-2. **Discovered from your own `$DSH_HOME/settings.yaml`**: any provider route whose
-   `baseURL` points at `commandcode.ai`. The plugin reads that route's literal
+2. **Discovered from your own DSH configuration**: any provider route whose
+   `baseURL` points at `commandcode.ai`, read from `$DSH_HOME/settings.yaml` or a
+   patch layer (`$DSH_HOME/cordis.patch.yml`, `$DSH_HOME/profiles/<name>/cordis.patch.yml`
+   — the desktop app keeps its settings there). The plugin reads that route's literal
    `apiKey`, or its `apiKeyEnv` resolved through the environment and
    `$DSH_HOME/.credentials.yaml`.
 3. Environment variables `COMMANDCODE_API_KEY`, `COMMAND_CODE_API_KEY`,

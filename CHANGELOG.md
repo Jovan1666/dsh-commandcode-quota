@@ -10,6 +10,24 @@ back here, at the repository root, and this repository is the standalone source
 again. `package.json` still says `0.1.0`: that number is the npm package identity
 and the cordis loader id, not a document version, so it does not move.
 
+### Fixed
+
+- **The desktop app could never show the card, and said nothing about it.** The
+  provider route was discovered by reading `$DSH_HOME/settings.yaml` only, but the
+  Electron app migrates that file to `settings.yaml.imported` on first launch and
+  writes user settings into the patch layers from then on
+  (`$DSH_HOME/cordis.patch.yml`, `$DSH_HOME/profiles/<name>/cordis.patch.yml`). On
+  every desktop install the host therefore answered `configured: false` — by design
+  a card that renders nothing and reports no error, which is why "installed but
+  invisible" had nothing to diagnose. Route discovery now scans both patch layers
+  too; the indent scan already handled the shape, so only the candidate list grew.
+- **A host without Command Code was asked exactly once, ever.** After
+  `configured: false` the card went invisible and never polled again, so a provider
+  added *after* the card mounted — the desktop migration above, a settings edit, a
+  profile switch — stayed invisible for the rest of the session. It now re-checks
+  every 5 minutes while absent (`ABSENT_MS`): still renders nothing, but a host that
+  genuinely does not use Command Code pays one local round trip per 5 minutes.
+
 ### Added
 
 - **A three-platform CI workflow**, `.github/workflows/check.yml`: Ubuntu, Windows
@@ -21,7 +39,7 @@ and the cordis loader id, not a document version, so it does not move.
   file parses, every `.js`/`.mjs` passes `node --check`, no credential or
   machine-specific path is committed, the package identity is consistent across
   `package.json`, `package-lock.json`, `cordis.patch.yml` and `screenshots.json`,
-  and then the 141 offline checks in `scripts/verify.mjs`.
+  and then the 146 offline checks in `scripts/verify.mjs`.
 - **`SECURITY.md`** — supported versions, private reporting, the exact list of what
   the plugin reads, writes and sends, and the credential-resolution order.
 - **`package-lock.json`** — the React dependency tree, so CI installs what the
