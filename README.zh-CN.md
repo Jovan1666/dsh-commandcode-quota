@@ -297,7 +297,7 @@ key: $DSH_HOME/.credentials.yaml → refs.COMMAND_CODE_GOAT_API_KEY
 |---|---|
 | 完全没有卡片 | 这台机器没配 Command Code provider，插件按设计保持不可见。去「设置 → Models」确认。 |
 | 卡片显示错误 | 卡片会给你能读懂的一句话（"连不上 Command Code"、"API key 被拒绝了"），悬停可看完整诊断文本。 |
-| `/plugins/dsh-commandcode-quota/client.js` 返回 404 | 客户端 bundle 没被组合。确认 `package.json` 里有 `dsh.client.platform === "web"` 和 `exports["./client"]`。 |
+| `/plugins/dsh-commandcode-quota/client.js` 返回 404 | 客户端 bundle 没被组合。确认 `package.json` 里有 `dsh.client.platform === "web"` 和 `exports["./client"]`。 桌面端上这个探测没有意义：连内置的 `dsh-client-ui-sidebar` 也是 404，因为桌面端渲染进程不从那个 HTTP 服务取 bundle。 |
 | 改了 `client.js` 没生效 | 刷新页面即可——bundle 每请求现读磁盘。改的是 `index.js` 或 `quota.mjs` 就必须重启 `dsh web`（Node 会缓存模块）。 |
 | 数字变灰 | 宿主返回的是磁盘快照，或某次刷新失败。下面会标出距上次成功多久，下一次刷新自动恢复。 |
 | 全是 `—` | 该套餐没上报窗口，或者某次读取还在路上。 |

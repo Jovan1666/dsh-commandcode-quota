@@ -296,7 +296,7 @@ The CLI's human-readable output is Chinese; `--json` is language-neutral and is 
 |---|---|
 | No card at all | This host has no Command Code provider configured, so the plugin stays invisible by design. Check Settings → Models. |
 | The card shows an error | The card says what it can ("cannot reach Command Code", "the API key was rejected"); hover it for the full diagnostic text. |
-| `/plugins/dsh-commandcode-quota/client.js` returns 404 | The client bundle was not composed. Check that `package.json` declares `dsh.client.platform === "web"` and `exports["./client"]`. |
+| `/plugins/dsh-commandcode-quota/client.js` returns 404 | The client bundle was not composed. Check that `package.json` declares `dsh.client.platform === "web"` and `exports["./client"]`. On the desktop client this probe proves nothing: even a built-in bundle such as `dsh-client-ui-sidebar` returns 404 there, because the desktop renderer does not fetch its bundles from that HTTP server. |
 | A change to `client.js` did nothing | Reload the page — the bundle is read from disk per request. Changes to `index.js` or `quota.mjs` need a `dsh web` restart (Node caches modules). |
 | Numbers are dimmed | The host answered with its last snapshot, or a refresh failed. The age is printed underneath, and it corrects itself on the next refresh. |
 | Everything reads `—` | The account reported no windows for that plan, or a read is still in flight. |
