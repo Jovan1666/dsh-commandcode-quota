@@ -96,6 +96,22 @@ New-Item -ItemType Junction -Path "$dsh\profiles\web\node_modules\dsh-commandcod
 
 </details>
 
+### 桌面端
+
+Electron 桌面端独占管理它自己的 profile：`dsh --profile desktop …` 会直接拒绝，报 `profile "desktop" is managed exclusively by the Electron application`。所以那边用不了 `dsh plugin`，只能手动挂。
+
+```powershell
+$dsh = if ($env:DSH_HOME) { $env:DSH_HOME } else { "$env:USERPROFILE\.dsh" }
+New-Item -ItemType Directory -Force -Path "$dsh\profiles\desktop\node_modules" | Out-Null
+New-Item -ItemType Junction `
+  -Path "$dsh\profiles\desktop\node_modules\dsh-commandcode-quota" `
+  -Target "C:\path\to\dsh-commandcode-quota"
+```
+
+然后把同样的 `insert` 块加到 `$dsh\profiles\desktop\cordis.patch.yml`，重启桌面端。
+
+> 往这个文件里加的东西**只用 ASCII**。应用会自己重写 profile：手动加的 `insert` 条目会保留，但条目上的中文注释会被重写成乱码。
+
 ## 为什么卡片不用等
 
 过去首屏要等完一整趟上游往返，而刚重启的 dsh 没有任何缓存——这就是"要过一会儿才出来"的来源。用 `node preview/latency.mjs` 对线上接口实测：

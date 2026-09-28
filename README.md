@@ -95,6 +95,22 @@ New-Item -ItemType Junction -Path "$dsh\profiles\web\node_modules\dsh-commandcod
 
 </details>
 
+### Desktop client
+
+The Electron desktop client owns its profile: `dsh --profile desktop …` refuses to run with `profile "desktop" is managed exclusively by the Electron application`, so the `dsh plugin` route is unavailable there and the row has to be added by hand.
+
+```powershell
+$dsh = if ($env:DSH_HOME) { $env:DSH_HOME } else { "$env:USERPROFILE\.dsh" }
+New-Item -ItemType Directory -Force -Path "$dsh\profiles\desktop\node_modules" | Out-Null
+New-Item -ItemType Junction `
+  -Path "$dsh\profiles\desktop\node_modules\dsh-commandcode-quota" `
+  -Target "C:\path\to\dsh-commandcode-quota"
+```
+
+Then add the same `insert` block to `$dsh\profiles\desktop\cordis.patch.yml` and restart the desktop app.
+
+> Keep whatever you add to that file **ASCII-only**. The app regenerates the profile on its own: an `insert` entry added by hand survives, but a non-ASCII comment on it comes back mangled.
+
 ## Why it appears before you look
 
 The card used to wait out a full upstream round trip before drawing anything, and a restarted dsh has nothing cached — which is exactly the "it takes a moment to show up" feeling. Measured against the live API with `node preview/latency.mjs`:
