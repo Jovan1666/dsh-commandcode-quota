@@ -34,7 +34,11 @@ requests, tokens), `/alpha/billing/credits` (remaining credits, the 5-hour and
 weekly windows) and `/alpha/billing/subscriptions` (plan id, billing period).
 There is no other request and no public endpoint is read. Each endpoint degrades
 on its own: a failure is recorded in the report and shown on the card instead of
-being retried silently.
+being retried silently. Each endpoint also gets 30 seconds to answer —
+`COMMANDCODE_QUOTA_TIMEOUT_MS` moves that, between 1 s and 120 s — and a reading
+that misses the deadline is dropped and named in the report rather than replaced
+with an older number. A `200` response that carries the vendor's own failure
+envelope (`{"success":false,…}`) counts as a failed read too.
 
 ### Host config
 
@@ -68,7 +72,9 @@ Your Command Code key is discovered in this order, and used for nothing except t
    `apiKey`, or its `apiKeyEnv` resolved through the environment and
    `$DSH_HOME/.credentials.yaml`.
 3. Environment variables `COMMANDCODE_API_KEY`, `COMMAND_CODE_API_KEY`,
-   `CMD_API_KEY`, then any variable whose name contains `commandcode`.
+   `CMD_API_KEY`, then any variable whose name contains `commandcode`. The one
+   exception is this plugin's own `COMMANDCODE_QUOTA_TIMEOUT_MS`, which is a
+   millisecond count and is never read as a key.
 4. The same names inside `$DSH_HOME/.credentials.yaml` (`refs.<NAME>`).
 5. `~/.commandcode/auth.json`, the official `command-code` CLI's login state.
 

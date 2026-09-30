@@ -15,7 +15,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
-const { resolveApiKey, discoverRoutes, subscriptionPlanInfo } = await import(
+const { DEFAULT_TIMEOUT_MS, TIMEOUT_ENV_NAME, resolveApiKey, discoverRoutes, resolveTimeoutMs, subscriptionPlanInfo } = await import(
   `../quota.mjs?t=${String(Date.now())}`
 )
 
@@ -256,6 +256,47 @@ console.log('a desktop (Electron) host keeps its config in a patch layer, not se
     const hit = resolveApiKey({ env: {}, dshHome: home, home: NO_HOME })
     assert.equal(hit.key, 'user_from_settings')
     rmSync(home, { recursive: true, force: true })
+  })
+}
+
+console.log('how long a read may take')
+{
+  check('the default deadline leaves room for a slow vendor', () => {
+    // 2026-09-30: the vendor's own `server-timing` self-reported `total;dur=14018.0`
+    // for `/alpha/usage/summary` while `/alpha/billing/credits` answered in 43ms.
+    // A deadline at or below that turned three slow-but-alive endpoints into lost
+    // rows — the card's "3 项数据这次没取到".
+    assert.ok(DEFAULT_TIMEOUT_MS >= 30_000, `the default deadline is ${DEFAULT_TIMEOUT_MS}ms`)
+  })
+  check('the environment can move the deadline within its bounds', () => {
+    assert.equal(resolveTimeoutMs({ env: { [TIMEOUT_ENV_NAME]: '45000' } }), 45_000)
+    assert.equal(resolveTimeoutMs({ env: { [TIMEOUT_ENV_NAME]: '1000' } }), 1_000)
+    assert.equal(resolveTimeoutMs({ env: { [TIMEOUT_ENV_NAME]: '120000' } }), 120_000)
+  })
+  check('an explicit value wins over the environment', () => {
+    assert.equal(resolveTimeoutMs({ timeoutMs: 5_000, env: { [TIMEOUT_ENV_NAME]: '45000' } }), 5_000)
+  })
+  check('a typo, an empty value or an out-of-range one falls back to the default', () => {
+    for (const raw of ['', '   ', 'abc', 'NaN', 'Infinity', '0', '-5', '999', '120001']) {
+      assert.equal(
+        resolveTimeoutMs({ env: { [TIMEOUT_ENV_NAME]: raw } }),
+        DEFAULT_TIMEOUT_MS,
+        `raw=${JSON.stringify(raw)} was accepted`,
+      )
+    }
+  })
+  check('the deadline variable is never mistaken for an API key', () => {
+    // The last-resort scan treats any environment name containing "commandcode" as
+    // a key. This knob matches that pattern, and taken as a key it would send
+    // "30000" to Command Code as a Bearer token.
+    assert.throws(
+      () => resolveApiKey({ env: { [TIMEOUT_ENV_NAME]: '30000' }, dshHome: NO_HOME, home: NO_HOME }),
+      (error) => error.code === 'MISSING_CREDENTIAL',
+    )
+  })
+  check('a real key still resolves alongside the deadline variable', () => {
+    const hit = resolveApiKey({ env: { COMMANDCODE_API_KEY: 'demo-key', [TIMEOUT_ENV_NAME]: '30000' }, dshHome: NO_HOME, home: NO_HOME })
+    assert.equal(hit.key, 'demo-key')
   })
 }
 
