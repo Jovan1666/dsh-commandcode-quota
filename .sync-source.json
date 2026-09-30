@@ -1,12 +1,12 @@
 {
   "source": "https://github.com/Jovan1666/commandcode-usage",
-  "sourceCommit": "80b65f13bbb98c373a41754e59d336c81a9f0b99",
+  "sourceCommit": "aef15a0dd030decbb5e359c8bc4531896ddd3cc1",
   "note": "本文件由 monorepo 的 scripts/release.mjs 生成：列出本仓库里属于「分发产物」的文件及其 sha256。要改实现请改 monorepo；本仓库的副本被就地改动时 scripts/verify-core.mjs 会报错。",
   "files": {
     ".github/workflows/verify-core.yml": "4e5afe9e98d279d02aa1dd58c0a6825e47c67a563a27dac44039e282a66c4442",
     "assets/screenshot.png": "3b5024e04a5c0c88cbcb27bf40c82fa4e0fbb2034a98885fe90f62b751dd9d28",
     "cli/ccq.cmd": "f296af927da9d5330a71700a57ba67b7432c16825e213b8f52d418b6151bc5bc",
-    "cli/cli.mjs": "26cb8fe391715c1d58f68535b4e58fee82b6e25c18c6f94d630cc3608c88724b",
+    "cli/cli.mjs": "3cc83564bc7552bc2ffeb1bcb48b004fe5ed8ec8c81fe07e30f6a9a8e80c44a2",
     "client.js": "732d854e9ae6fc642baff1f2ce015f41555cef644d3c2a4a1edc90979200a7ed",
     "index.js": "fdb3d94fe9e50410a21dac904f7b4576df42344828ad201a1495c35681fa478c",
     "package.json": "cbe08f56fa07c15fed82ba575f68841e491c561882875e433eabe709a0fa6c0f",
@@ -16,14 +16,14 @@
     "preview/e2e-watch.mjs": "64e1dd325ebf5ab1b5e536dbe9f96d512e4e47d0ef5bb929ce10856b35d141f2",
     "preview/latency.mjs": "0909bd23fe2488a97597e9970244f6aa108680f8ce28998e3cac8dbc9d2c8aff",
     "preview/render-mermaid.mjs": "071086697c977c7e55375ff785f01e955ab795079dc91e78edd3869f1e954beb",
-    "quota.mjs": "f62b4aaaec14d4ef9a79a356e0139068b82fa48460c64809711fa2f81d8c652f",
+    "quota.mjs": "cb47699cee9deed75e8b72094893406053d0d88a77b6dc84fbab5fbf620d0b8c",
     "scripts/audit.mjs": "b39f1564a418ea91647551a4251b14874fc76c9899c750c1f5b0de3f306859c7",
     "scripts/verify-core.mjs": "c4aa76153732930baec323469ce046570b0a9f60b0131bc8d5e86a19d94528c9",
     "scripts/verify.mjs": "f96a32466ca30960b7319d4184c53fab0a23aa4a379314b112535041ef946a24",
     "tests/cli.test.mjs": "382f2fb894a2f2233d68e781b7f6ae224091d712f4a19917c04f0e95ee840b48",
     "tests/client.test.mjs": "e31ae67916a054c171b5066721f33df3a0636899225485975eb0705212203a23",
-    "tests/dynamic.test.mjs": "4571c395fb7ba835e31eced8a7e2d2f8ccee8c08a63141a685c4b60115c76dcf",
+    "tests/dynamic.test.mjs": "29690dc0087f12bbf6e53552d5353eb32128243417b9a8de9f4e480d542c59da",
     "tests/host.test.mjs": "665c0c51e480159d5ccc5d2b4f7a4e6548e505a069601dbcd54b7a5b9b1d2362",
-    "tests/quota.test.mjs": "28f73502f171a5602b968194a8e6c092c89c52fb049c8ed1b3650b5093cb5c19"
+    "tests/quota.test.mjs": "9bf764780c18915e44033071e05c5b31c5b9c048e714e17bb35da704d049ece7"
   }
 }

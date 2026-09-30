@@ -47,7 +47,7 @@ dsh --version          # needs 0.1.5-rc.1 or newer
 npm i -g @deepseek-ai/dsh@latest
 ```
 
-Note that the plugin's 146 offline checks also **pass** on an older dsh — they never start dsh. So "the checks are green" does not mean it will work once installed.
+Note that the plugin's 158 offline checks also **pass** on an older dsh — they never start dsh. So "the checks are green" does not mean it will work once installed.
 
 ## Install
 
@@ -286,7 +286,7 @@ key: $DSH_HOME/.credentials.yaml → refs.COMMAND_CODE_GOAT_API_KEY
 
 Shown with `--ascii`, and deliberately so: the default bars are drawn with full-height block glyphs, which sit flush against the text line beside them in many code fonts — in this very README the weekly bar merged with the 5-hour countdown above it. `#` and `-` are ordinary glyphs and travel everywhere. There are also no rule lines and no right-aligned columns, so every line stands on its own instead of depending on character-cell widths.
 
-Flags: `--json`, `--watch [seconds]`, `--ascii`, `--color` / `--no-color`, `--base <url>`, `--timeout <ms>`, `--key <key>`.
+Flags: `--json`, `--watch [seconds]`, `--ascii`, `--color` / `--no-color`, `--base <url>`, `--timeout <ms>` (default 30 s; `COMMANDCODE_QUOTA_TIMEOUT_MS` overrides it), `--key <key>`.
 
 The CLI's human-readable output is Chinese; `--json` is language-neutral and is the interface to script against. It follows the card's presentation rules — money on the monthly allowance only, no pace verdict and no burn-rate forecast (those remain in the JSON).
 
@@ -296,6 +296,7 @@ The CLI's human-readable output is Chinese; `--json` is language-neutral and is 
 |---|---|
 | No card at all | This host has no Command Code provider configured, so the plugin stays invisible by design. Check Settings → Models. |
 | The card shows an error | The card says what it can ("cannot reach Command Code", "the API key was rejected"); hover it for the full diagnostic text. |
+| A line under the rows saying **N reading(s) unavailable** (`3 项数据这次没取到`) | N of the four upstream readings did not count this time. Each endpoint gets 30 s (`COMMANDCODE_QUOTA_TIMEOUT_MS` moves that, in ms, 1 s–120 s); past it the reading is dropped rather than shown, and the usual cause is Command Code itself being slow — on 2026-09-30 its own `server-timing` header reported 14 s for `/alpha/usage/summary` while `/alpha/billing/credits` answered in 43 ms. Hover the card to see which endpoint failed; the next poll retries on its own. A missing monthly row on the same card is the same cause, one endpoint over. |
 | `/plugins/dsh-commandcode-quota/client.js` returns 404 | The client bundle was not composed. Check that `package.json` declares `dsh.client.platform === "web"` and `exports["./client"]`. On the desktop client this probe proves nothing: even a built-in bundle such as `dsh-client-ui-sidebar` returns 404 there, because the desktop renderer does not fetch its bundles from that HTTP server. |
 | A change to `client.js` did nothing | Reload the page — the bundle is read from disk per request. Changes to `index.js` or `quota.mjs` need a `dsh web` restart (Node caches modules). |
 | Numbers are dimmed | The host answered with its last snapshot, or a refresh failed. The age is printed underneath, and it corrects itself on the next refresh. |
@@ -315,17 +316,17 @@ The CLI's human-readable output is Chinese; `--json` is language-neutral and is 
 # 1. React is needed only by the component test and the preview page
 mkdir .devdeps && cd .devdeps && npm init -y && npm install react@18 react-dom@18 && cd ..
 
-# 2. Everything at once — 146 checks, one verdict, no network, no real credentials
+# 2. Everything at once — 158 checks, one verdict, no network, no real credentials
 node scripts/check.mjs            # release check: static + secret scan + every suite below
 node scripts/verify.mjs           # add --live to also hit a real account
 node scripts/verify.mjs --quiet   # one summary line per suite
 ```
 
 ```text
-ok    quota   (discovery contract)            17 checks
+ok    quota   (discovery contract)            27 checks
 ok    host    (route, cache, concurrency)     30 checks
-ok    client  (rendering, boundaries)         58 checks
-ok    dynamic (drift, resets, bad payloads)   33 checks
+ok    client  (rendering, boundaries)         59 checks
+ok    dynamic (drift, resets, bad payloads)   39 checks
 ok    cli     (arguments, exit codes)          3 checks
 ok    audit   (credentials, host paths)
 ```
@@ -348,6 +349,7 @@ Determinism is checked by repetition, not by reading the code: `for i in 1 2 3 4
 - **No per-model allowance breakdown.** Command Code allocates a per-model share of the monthly budget, but the `/alpha` endpoints do not expose that table, so the card reports the total only.
 - **No history.** Every read is a live snapshot; nothing is stored except the one cached report.
 - **Command Code only.** This does not replace DSH's own local token statistics (`$DSH_HOME/dsh-usage/`).
+- **The vendor's own latency is the read's deadline.** Healthy, all four endpoints answer in about a second; each gets 30 s before its reading is dropped, and `COMMANDCODE_QUOTA_TIMEOUT_MS` overrides that. A dropped reading is never filled in with an older number: the card says how many are missing and names them on hover.
 - **Framework seams.** See [Compatibility](#compatibility) — a future dsh release will need a look.
 
 ## Contributing

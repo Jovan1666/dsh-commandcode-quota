@@ -18,8 +18,58 @@ import path from 'node:path';
 /** Command Code Provider API 的默认地址。 */
 export const DEFAULT_API_BASE = 'https://api.commandcode.ai';
 
-/** 单次请求超时；官方端点正常在 1s 内返回。 */
-export const DEFAULT_TIMEOUT_MS = 15000;
+/**
+ * 单次请求超时。
+ *
+ * 这个数不是「给宽一点更保险」，它是「这次读算不算数」的唯一判据：一旦超时，
+ * 端点当次的数据就被丢掉，卡片上少一行。
+ *
+ * 健康时官方端点都在 1s 内返回（`/alpha/billing/credits` 实测 0.2–0.4s），所以
+ * 15s 曾经绰绰有余。2026-09-30 厂商侧数据面降级时，同一批请求的响应头
+ * `server-timing` 自报 `total;dur=14018.0`（同一次读里 credits 是 `dur=43.0`）——
+ * 也就是**服务端自己**要花 14–21s。15s 的截止线正好落进厂商的延迟区间，三个端点
+ * 因此被本地中断：卡片显示「3 项数据这次没取到」，月度行整块消失，而这些数据只差
+ * 几秒就到了。
+ *
+ * 30s 覆盖实测最坏值（约 21s）并留余量。厂商再次变慢时不必等发版：环境变量
+ * {@link TIMEOUT_ENV_NAME} 可以临时放宽。
+ */
+export const DEFAULT_TIMEOUT_MS = 30000;
+
+/**
+ * 覆盖 {@link DEFAULT_TIMEOUT_MS} 的环境变量名。
+ *
+ * 只决定「等多久算失败」，不改变任何数据的解读方式。允许 1s–120s：更小会在健康
+ * 网络上误杀，更大会让浏览器那一半等得比轮询间隔还久。
+ */
+export const TIMEOUT_ENV_NAME = 'COMMANDCODE_QUOTA_TIMEOUT_MS';
+
+/** 环境变量覆盖的允许区间。 */
+const MIN_TIMEOUT_MS = 1000;
+const MAX_TIMEOUT_MS = 120000;
+
+/**
+ * 解析这次取数该等多久：显式传入 → 环境变量 → {@link DEFAULT_TIMEOUT_MS}。
+ *
+ * 非法取值（拼错、越界、空串）一律当作没设置。一个手滑的环境变量不该让卡片永久
+ * 读不到数；静默回落到默认值也是可诊断的：超时会在报告的 `failures` 里留下
+ * 一行，说明读到哪一步为止。
+ *
+ * @param {object} [options]
+ * @param {number} [options.timeoutMs] 显式超时（CLI 的 `--timeout`）。
+ * @param {NodeJS.ProcessEnv} [options.env] 环境变量表，默认 `process.env`。
+ * @returns {number} 毫秒。
+ */
+export function resolveTimeoutMs(options = {}) {
+  const explicit = options.timeoutMs;
+  if (typeof explicit === 'number' && Number.isFinite(explicit) && explicit > 0) return Math.round(explicit);
+  const raw = (options.env ?? process.env)[TIMEOUT_ENV_NAME];
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    const value = Number(raw);
+    if (Number.isFinite(value) && value >= MIN_TIMEOUT_MS && value <= MAX_TIMEOUT_MS) return Math.round(value);
+  }
+  return DEFAULT_TIMEOUT_MS;
+}
 
 /**
  * 密钥来源环境变量，按此顺序尝试。第一个是 DSH 里 `llm-pi-ai` 那条 provider
@@ -38,6 +88,15 @@ export const KEY_ENV_NAMES = Object.freeze([
 
 /** 环境变量名里出现这些片段就当作候选（兜住任意自定义命名）。 */
 const KEY_ENV_PATTERN = /command_?code/i;
+
+/**
+ * 名字落进 {@link KEY_ENV_PATTERN}、其实是本插件自己的开关，必须从密钥候选里排掉。
+ *
+ * 兜底扫描的规则是「名字里含 commandcode 的环境变量就当密钥」。{@link TIMEOUT_ENV_NAME}
+ * 正落在这个模式里：把它当密钥用，读不到额度是小事，把一个超时毫秒数当 Bearer
+ * 发出去才是问题。
+ */
+const KEY_ENV_EXCLUDED = new Set([TIMEOUT_ENV_NAME]);
 
 /** 判定一个 baseURL 是否指向 Command Code 的官方 API。 */
 const COMMANDCODE_HOST_PATTERN = /(^|\/\/|\.)commandcode\.ai(\/|$)/i;
@@ -429,6 +488,8 @@ export function resolveApiKey(options = {}) {
   }
   for (const name of Object.keys(env)) {
     if (!KEY_ENV_PATTERN.test(name)) continue;
+    // This plugin's own knobs are not credentials: see KEY_ENV_EXCLUDED.
+    if (KEY_ENV_EXCLUDED.has(name)) continue;
     const value = env[name];
     if (typeof value === 'string' && value !== '') return { key: value, source: `环境变量 ${name}` };
   }
@@ -464,11 +525,41 @@ function codeForStatus(status) {
 }
 
 /**
+ * 把厂商的「200 失败信封」压成一行可读文本。
+ *
+ * 信封有两种形状，本插件都实测过：
+ * `{"success":false,"error":"write CONNECTION_CLOSED …"}`（字符串）
+ * 与 `{"success":false,"error":{"code":"INTERNAL_SERVER_ERROR","message":"…"}}`。
+ *
+ * @param {object} record 已解析的响应体。
+ * @returns {string} 尽量具体的一行说明；实在没有信息时说清楚这一点。
+ */
+function describeEnvelopeFailure(record) {
+  const error = record.error;
+  if (typeof error === 'string' && error !== '') return error;
+  if (isRecord(error)) {
+    const code = stringOf(error.code);
+    const message = stringOf(error.message);
+    if (code !== undefined && message !== undefined) return `${code}: ${message}`;
+    if (message !== undefined) return message;
+    if (code !== undefined) return code;
+  }
+  return stringOf(record.message) ?? '服务端未说明原因';
+}
+
+/**
  * 请求一个端点并解析 JSON。非 2xx 与不可解析的响应都返回 `undefined` 记录，
  * 只有传输层失败才抛出，供调用方按端点记账。
  *
+ * 2xx 不等于成功：厂商会把一部分服务端故障装在 200 的响应体里（见
+ * {@link describeEnvelopeFailure}）。把它当数据收下，等于**静默**丢掉这个端点的
+ * 贡献——2026-09-30 就是这样：`/alpha/billing/subscriptions` 回 200 的信封
+ * `success:false`，计划名从卡片上消失了，而 `failures` 里一个字都没有，用户既
+ * 少了内容又无从知道为什么。失败信封因此按一次失败的读记账。
+ *
  * @returns {Promise<{ status: number, record?: unknown }>}
- * @throws {QuotaError} 传输失败或超时，码为 `NETWORK`。
+ * @throws {QuotaError} 传输失败/超时（`NETWORK`）、失败信封（`SERVICE`）、
+ *   2xx 但不是 JSON（`BAD_RESPONSE`）。
  */
 async function getJson(url, headers, timeoutMs, fetchImpl) {
   let response;
@@ -478,12 +569,17 @@ async function getJson(url, headers, timeoutMs, fetchImpl) {
     throw new QuotaError('NETWORK', `${url} 请求失败：${error instanceof Error ? error.message : String(error)}`);
   }
   if (!response.ok) return { status: response.status };
+  let record;
   try {
-    return { status: response.status, record: await response.json() };
+    record = await response.json();
   } catch {
     // 拿到了 2xx 但不是 JSON：按 BAD_RESPONSE 记账，不冒充成功。
     throw new QuotaError('BAD_RESPONSE', `${url} 返回了非 JSON 响应`, { status: response.status });
   }
+  if (isRecord(record) && record.success === false) {
+    throw new QuotaError('SERVICE', `${url} 返回失败信封：${describeEnvelopeFailure(record)}`);
+  }
+  return { status: response.status, record };
 }
 
 /**
@@ -521,7 +617,8 @@ function parseWindow(block) {
  * @param {object} [options]
  * @param {string} [options.apiKey] 显式密钥；省略则按 {@link resolveApiKey} 的优先级解析。
  * @param {string} [options.apiBase] API 基地址，默认 {@link DEFAULT_API_BASE}。
- * @param {number} [options.timeoutMs] 单端点超时。
+ * @param {number} [options.timeoutMs] 单端点超时；默认走 {@link resolveTimeoutMs}
+ *   （先看环境变量 {@link TIMEOUT_ENV_NAME}，再退到 {@link DEFAULT_TIMEOUT_MS}）。
  * @param {typeof fetch} [options.fetchImpl] 注入 fetch，便于测试。
  * @param {NodeJS.ProcessEnv} [options.env] 传给密钥解析的环境变量表。
  * @param {string} [options.home] 用户主目录。
@@ -529,7 +626,7 @@ function parseWindow(block) {
  * @returns {Promise<object>} 报告对象，字段见 README。
  */
 export async function fetchQuotaReport(options = {}) {
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = resolveTimeoutMs({ timeoutMs: options.timeoutMs, env: options.env });
   const fetchImpl = options.fetchImpl ?? fetch;
   const resolved = resolveApiKey(options);
   // An explicit base wins; otherwise follow the baseURL the user configured for
@@ -547,6 +644,8 @@ export async function fetchQuotaReport(options = {}) {
   const failures = [];
   /** @type {number[]} */
   const failedStatuses = [];
+  /** @type {string[]} */
+  const failedCodes = [];
 
   const get = async (url) => {
     try {
@@ -559,7 +658,10 @@ export async function fetchQuotaReport(options = {}) {
       return record;
     } catch (error) {
       failures.push(`${url.replace(apiBase, '')}: ${error instanceof Error ? error.message : String(error)}`);
-      if (error instanceof QuotaError && error.status !== undefined) failedStatuses.push(error.status);
+      if (error instanceof QuotaError) {
+        if (error.status !== undefined) failedStatuses.push(error.status);
+        failedCodes.push(error.code);
+      }
       return undefined;
     }
   };
@@ -624,6 +726,15 @@ export async function fetchQuotaReport(options = {}) {
     }
     if (allObserved((status) => status >= 500)) {
       throw new QuotaError('SERVICE', 'Command Code 服务端异常（5xx），稍后重试。', { failures });
+    }
+    // 四个端点都用 200 的失败信封回话：服务活着，数据面坏了。按 NETWORK 报会把
+    // 人支去查网络，而这里根本没有网络问题。
+    if (failedCodes.length === 4 && failedCodes.every((code) => code === 'SERVICE')) {
+      throw new QuotaError(
+        'SERVICE',
+        '四个端点都返回了失败信封（HTTP 200 内 success:false）：Command Code 服务端数据面异常，稍后重试。',
+        { failures },
+      );
     }
     throw new QuotaError('NETWORK', `四个端点全部失败：\n  ${failures.join('\n  ')}`, { failures });
   }

@@ -11,7 +11,7 @@
  * node cli.mjs --watch 60  # 每 60 秒刷新
  */
 
-import { DEFAULT_API_BASE, DEFAULT_TIMEOUT_MS, QuotaError, fetchQuotaReport } from '../quota.mjs';
+import { DEFAULT_API_BASE, QuotaError, TIMEOUT_ENV_NAME, fetchQuotaReport, resolveTimeoutMs } from '../quota.mjs';
 
 const BAR_WIDTH = 28;
 const LABEL_WIDTH = 10;
@@ -40,7 +40,7 @@ function parseArgs(argv) {
     ascii: false,
     color: process.stdout.isTTY === true,
     apiBase: DEFAULT_API_BASE,
-    timeoutMs: DEFAULT_TIMEOUT_MS,
+    timeoutMs: resolveTimeoutMs(),
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -90,7 +90,7 @@ function printUsage() {
       '  --ascii          进度条只用 ASCII 字符',
       '  --color / --no-color  强制开关 ANSI 颜色',
       '  --base <url>     API 基地址，默认 ' + DEFAULT_API_BASE,
-      '  --timeout <ms>   单端点超时，默认 ' + DEFAULT_TIMEOUT_MS,
+      '  --timeout <ms>   单端点超时，默认 ' + resolveTimeoutMs() + '（可用 ' + TIMEOUT_ENV_NAME + ' 覆盖）',
       '  --key <key>      显式 API key（优先级最高，会留在 shell 历史里）',
       '',
     ].join('\n'),

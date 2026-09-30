@@ -2,6 +2,43 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] — 2026-09-30
+
+### Fixed
+
+- **A slow Command Code cost the card three of its four readings, the monthly row
+  among them, and all the card could say was `3 项数据这次没取到`.** The data layer
+  gave every endpoint 15 seconds — a number chosen when a healthy read takes about
+  one. While the vendor's data plane was degraded on 2026-09-30, its own
+  `server-timing` header self-reported `total;dur=14018.0` for
+  `/alpha/usage/summary`, against `dur=43.0` for `/alpha/billing/credits`: the
+  15-second line sat *inside* the vendor's latency, so three readings were aborted
+  locally while their data was seconds away. The default deadline is now 30 seconds
+  — above the worst case measured, ~21 s — and `COMMANDCODE_QUOTA_TIMEOUT_MS` moves
+  it (1 s–120 s) without waiting for a release.
+- **A `200` response that reported a failure of its own was read as data,
+  silently.** While degraded, `/alpha/billing/subscriptions` answers
+  `200 {"success":false,"error":"write CONNECTION_CLOSED …"}`. The envelope parsed
+  as a record with no `.data`, so the plan silently disappeared from the card *and*
+  `failures` stayed empty — the one case the plugin's own "nothing silent" rule
+  exists to prevent. A failure envelope is now a failed read: it is named in
+  `failures` with the vendor's own message, and four of them classify as a service
+  problem rather than a network one.
+
+### Changed
+
+- **The read deadline is a setting, not a constant.** `node cli/cli.mjs --timeout <ms>`
+  still wins, `COMMANDCODE_QUOTA_TIMEOUT_MS` covers the no-flag case, and `--help`
+  prints the value that will actually be used.
+
+### Tests
+
+- Five new checks, and the suite is now 158 offline checks: a `200` failure envelope
+  is a failed read, a slow endpoint that answers inside the deadline costs nothing,
+  a reading past the deadline is dropped and named, the deadline can be moved
+  through the environment, and the deadline variable is never mistaken for an API
+  key.
+
 ## [Unreleased] — 2026-09-26
 
 The plugin is back in this repository. Its content — which had continued to be

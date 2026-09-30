@@ -17,7 +17,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
-const { fetchQuotaReport } = await import(`../quota.mjs?t=${String(Date.now())}`)
+const { DEFAULT_TIMEOUT_MS, TIMEOUT_ENV_NAME, fetchQuotaReport } = await import(`../quota.mjs?t=${String(Date.now())}`)
 
 let passed = 0
 const check = (label, fn) => {
@@ -514,6 +514,125 @@ console.log('the read path itself')
     // And the fallback must not be reported as a degraded endpoint: nothing the
     // user can see is missing.
     assert.deepEqual(r.failures, [])
+  })
+}
+
+console.log('a 200 body that reports a failure of its own')
+{
+  // Observed live on 2026-09-30 while the vendor's data plane was degraded:
+  // `/alpha/billing/subscriptions` answered `200 {"success":false,"error":"write
+  // CONNECTION_CLOSED …"}`. Taken as data, that envelope silently deleted the plan
+  // from the report — the card lost its plan chip and the monthly reset — and,
+  // worse, recorded no failure at all, so the card could not even say that
+  // something was missing.
+  await checkAsync('a string failure envelope is a failed read, named in failures', async () => {
+    const healthy = sampler([sample()])
+    const fetchImpl = (url) => {
+      if (new URL(url).pathname === '/alpha/billing/subscriptions') {
+        return Promise.resolve(Response.json({ success: false, error: 'write CONNECTION_CLOSED a8406dd84c52' }))
+      }
+      return healthy.fetchImpl(url)
+    }
+    const r = await fetchQuotaReport({ apiKey: 'k', fetchImpl, apiBase: 'https://api.commandcode.ai' })
+    assert.equal(r.failures.length, 1, `failures were ${JSON.stringify(r.failures)}`)
+    assert.match(r.failures[0], /失败信封/)
+    assert.match(r.failures[0], /write CONNECTION_CLOSED/, 'the vendor’s own words survive')
+    assert.equal(r.plan, undefined, 'the plan block is what went missing')
+    assert.equal(r.monthly.used, 40, 'and everything the other endpoints reported still renders')
+  })
+
+  await checkAsync('a structured failure envelope keeps its code and message', async () => {
+    const envelope = () => Promise.resolve(Response.json({
+      success: false,
+      error: { code: 'INTERNAL_SERVER_ERROR', message: 'boom' },
+    }))
+    await assert.rejects(
+      fetchQuotaReport({ apiKey: 'k', fetchImpl: envelope, apiBase: 'https://api.commandcode.ai' }),
+      // All four endpoints answering with an envelope is a service problem, not a
+      // network one: sending the user to check their connectivity would be wrong.
+      (error) => error.code === 'SERVICE' && /INTERNAL_SERVER_ERROR: boom/.test(error.failures.join('\n')),
+    )
+  })
+}
+
+console.log('how long a read is allowed to take')
+{
+  /** One healthy payload per endpoint, for the timing cases below. */
+  const payloadFor = (pathname) => {
+    if (pathname === '/alpha/whoami') return { user: { id: 'u-1' }, org: null }
+    if (pathname === '/alpha/usage/summary') return { totalCount: 10, successRate: 100, totalCredits: 10, periodBasis: 'billing-period' }
+    if (pathname === '/alpha/billing/credits') return { credits: { monthlyCredits: 60, purchasedCredits: 0, freeCredits: 0 }, windowLimits: { fiveHour: { used: 1, cap: 14, exceeded: false, resetAt: Date.now() + HOUR } } }
+    if (pathname === '/alpha/billing/subscriptions') return { data: { planId: 'individual-goat', status: 'active', currentPeriodStart: PERIOD_START, currentPeriodEnd: PERIOD_END } }
+    return undefined
+  }
+
+  /** One endpoint that dawdles for `delayMs` and honours the caller's deadline. */
+  const withSlowEndpoint = (slowPath, delayMs) => (url, init) => {
+    const { pathname } = new URL(url)
+    if (pathname !== slowPath) return Promise.resolve(Response.json(payloadFor(pathname)))
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { resolve(Response.json(payloadFor(pathname))) }, delayMs)
+      init?.signal?.addEventListener('abort', () => {
+        clearTimeout(timer)
+        reject(new Error('The operation was aborted due to timeout'))
+      }, { once: true })
+    })
+  }
+
+  check('the default deadline sits above the vendor’s slow-mode latency', () => {
+    // The vendor's own `server-timing` header reported `total;dur=14018.0` for
+    // `/alpha/usage/summary` (against `dur=43.0` for `/alpha/billing/credits`)
+    // during the 2026-09-30 degradation. A default at or below that turns three
+    // slow-but-alive endpoints into three lost rows — the card's "3 项数据这次没取到".
+    assert.ok(DEFAULT_TIMEOUT_MS >= 30_000, `the default deadline is ${DEFAULT_TIMEOUT_MS}ms`)
+  })
+
+  await checkAsync('a slow endpoint that answers inside the deadline costs nothing', async () => {
+    const r = await fetchQuotaReport({
+      apiKey: 'k',
+      fetchImpl: withSlowEndpoint('/alpha/usage/summary', 120),
+      apiBase: 'https://api.commandcode.ai',
+      timeoutMs: 2_000,
+    })
+    assert.deepEqual(r.failures, [])
+    assert.equal(r.monthly.used, 10)
+  })
+
+  await checkAsync('past the deadline only that endpoint is lost, and it is named', async () => {
+    const r = await fetchQuotaReport({
+      apiKey: 'k',
+      fetchImpl: withSlowEndpoint('/alpha/billing/subscriptions', 500),
+      apiBase: 'https://api.commandcode.ai',
+      timeoutMs: 60,
+    })
+    assert.equal(r.failures.length, 1, `failures were ${JSON.stringify(r.failures)}`)
+    assert.match(r.failures[0], /\/alpha\/billing\/subscriptions/)
+    assert.match(r.failures[0], /timeout/)
+    assert.equal(r.monthly.used, 10, 'the other three reads still land')
+    assert.ok(Math.abs(r.fiveHour.percent - (1 / 14) * 100) < 1e-12)
+  })
+
+  await checkAsync('the deadline can be pulled in without touching the code', async () => {
+    // The knob that makes a future vendor incident a config change rather than a
+    // release. On the default deadline this read succeeds after 1.4s; with the
+    // environment override it must abort first — the only way to see the configured
+    // value actually reach `AbortSignal.timeout`.
+    const allSlow = (url, init) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { resolve(Response.json(payloadFor(new URL(url).pathname))) }, 1_400)
+      init?.signal?.addEventListener('abort', () => {
+        clearTimeout(timer)
+        reject(new Error('The operation was aborted due to timeout'))
+      }, { once: true })
+    })
+    await assert.rejects(
+      fetchQuotaReport({
+        apiKey: 'k',
+        fetchImpl: allSlow,
+        apiBase: 'https://api.commandcode.ai',
+        env: { [TIMEOUT_ENV_NAME]: '1000' },
+      }),
+      (error) => error.code === 'NETWORK' && /whoami/.test(error.failures.join('\n')),
+    )
   })
 }
 

@@ -47,7 +47,7 @@ dsh --version          # 需要 0.1.5-rc.1 或更高
 npm i -g @deepseek-ai/dsh@latest
 ```
 
-注意：插件的 146 项离线校验**跑得过**也不需要这个版本——那些校验不启动 dsh。
+注意：插件的 158 项离线校验**跑得过**也不需要这个版本——那些校验不启动 dsh。
 所以「校验全绿」不代表装上去能用。
 
 ## 安装
@@ -287,7 +287,7 @@ key: $DSH_HOME/.credentials.yaml → refs.COMMAND_CODE_GOAT_API_KEY
 
 这里展示的是 `--ascii` 模式的输出，是刻意的：默认进度条用的是满行高的块字符，在很多等宽字体里会和紧挨着的那行文字糊在一起——本 README 之前就是这样，每周的进度条和上面 5 小时的重置时间粘成了一块。`#` 和 `-` 是普通字形，到哪儿都正常。另外没有分隔线、也没有右对齐列，每一行都自洽，不依赖字符宽度。
 
-参数：`--json` / `--watch [秒]` / `--ascii` / `--color` / `--no-color` / `--base <url>` / `--timeout <ms>` / `--key <key>`。
+参数：`--json` / `--watch [秒]` / `--ascii` / `--color` / `--no-color` / `--base <url>` / `--timeout <ms>`（默认 30 秒，可用 `COMMANDCODE_QUOTA_TIMEOUT_MS` 覆盖）/ `--key <key>`。
 
 命令行工具与卡片同一套取舍：金额只给月度，不做配速判断和消耗预测（那些数字仍在 `--json` 里）；它的**人类可读输出是中文**，`--json` 与语言无关，是给脚本用的接口。
 
@@ -297,6 +297,7 @@ key: $DSH_HOME/.credentials.yaml → refs.COMMAND_CODE_GOAT_API_KEY
 |---|---|
 | 完全没有卡片 | 这台机器没配 Command Code provider，插件按设计保持不可见。去「设置 → Models」确认。 |
 | 卡片显示错误 | 卡片会给你能读懂的一句话（"连不上 Command Code"、"API key 被拒绝了"），悬停可看完整诊断文本。 |
+| 卡片下方出现「N 项数据这次没取到」 | 四个上游读取里有 N 个这次没算数。每个端点有 30 秒（`COMMANDCODE_QUOTA_TIMEOUT_MS` 可改，单位毫秒，1s–120s）；超时就丢掉这次读数，而不是拿旧数字顶上去。最常见的原因是 Command Code 自己慢——2026-09-30 它的 `server-timing` 头自报 `/alpha/usage/summary` 花了 14 秒，而同一次读里 `/alpha/billing/credits` 只要 43 毫秒。悬停能看到是哪个端点失败，下一次轮询会自动重试。同一张卡片上少一行「月度」，通常是同一个原因换了个端点。 |
 | `/plugins/dsh-commandcode-quota/client.js` 返回 404 | 客户端 bundle 没被组合。确认 `package.json` 里有 `dsh.client.platform === "web"` 和 `exports["./client"]`。 桌面端上这个探测没有意义：连内置的 `dsh-client-ui-sidebar` 也是 404，因为桌面端渲染进程不从那个 HTTP 服务取 bundle。 |
 | 改了 `client.js` 没生效 | 刷新页面即可——bundle 每请求现读磁盘。改的是 `index.js` 或 `quota.mjs` 就必须重启 `dsh web`（Node 会缓存模块）。 |
 | 数字变灰 | 宿主返回的是磁盘快照，或某次刷新失败。下面会标出距上次成功多久，下一次刷新自动恢复。 |
@@ -316,17 +317,17 @@ key: $DSH_HOME/.credentials.yaml → refs.COMMAND_CODE_GOAT_API_KEY
 # 1. React 只有组件测试和预览页需要
 mkdir .devdeps && cd .devdeps && npm init -y && npm install react@18 react-dom@18 && cd ..
 
-# 2. 一次跑完全部 —— 146 项，一个结论，不碰网络也不读真实凭据
+# 2. 一次跑完全部 —— 158 项，一个结论，不碰网络也不读真实凭据
 node scripts/check.mjs            # 发布检查：静态检查 + 密钥扫描 + 下面全部套件
 node scripts/verify.mjs           # 加 --live 会额外打真实账号
 node scripts/verify.mjs --quiet   # 每个套件只打一行汇总
 ```
 
 ```text
-ok    quota   (discovery contract)            17 checks
+ok    quota   (discovery contract)            27 checks
 ok    host    (route, cache, concurrency)     30 checks
-ok    client  (rendering, boundaries)         58 checks
-ok    dynamic (drift, resets, bad payloads)   33 checks
+ok    client  (rendering, boundaries)         59 checks
+ok    dynamic (drift, resets, bad payloads)   39 checks
 ok    cli     (arguments, exit codes)          3 checks
 ok    audit   (credentials, host paths)
 ```
@@ -349,6 +350,7 @@ ok    audit   (credentials, host paths)
 - **没有按模型分配的明细。** Command Code 把月度额度按模型分配，但 `/alpha` 端点不暴露那张表，卡片只能给总额。
 - **不记录历史。** 每次都是实时快照，本地除了那一份缓存报告不存任何东西。
 - **只覆盖 Command Code。** 不替代 dsh 自己的本地 token 统计（在 `$DSH_HOME/dsh-usage/`）。
+- **厂商的延迟就是这次读取的截止线。** 健康时四个端点都在 1 秒上下返回；每个端点有 30 秒，超过就把这次读数丢掉（`COMMANDCODE_QUOTA_TIMEOUT_MS` 可覆盖）。丢掉的读数不会用旧数字补上：卡片会说明丢了几个，悬停能看到是哪个。
 - **依赖框架内部接缝。** 见[兼容性](#兼容性)，未来的 dsh 版本需要跟着看一眼。
 
 ## 参与
