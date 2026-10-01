@@ -22,9 +22,9 @@ disclosure until a fix is out.
 
 | | |
 |---|---|
-| **Reads** | Your DSH config — the provider routes in `$DSH_HOME/settings.yaml` or a patch layer (`$DSH_HOME/cordis.patch.yml`, `$DSH_HOME/profiles/<name>/cordis.patch.yml`), and `$DSH_HOME/.credentials.yaml` for credential references — plus the official CLI's login state at `~/.commandcode/auth.json`, and the credential environment variables listed below. Nothing else. |
-| **Writes** | One file: the last-report snapshot at `$DSH_HOME/dsh-commandcode-quota/last-report.json` (directory `0700`, file `0600`). It holds the figures the card shows and a short, non-reversible digest of the key, so the plugin can tell whether the snapshot belongs to the account currently configured. The key itself is never in it. Delete the file any time; the plugin recreates it. |
-| **Sends** | HTTPS to `https://api.commandcode.ai` with **your own** key. No other host appears in the code. |
+| **Reads** | Your DSH config — the provider routes in `$DSH_HOME/settings.yaml` or a patch layer (`$DSH_HOME/cordis.patch.yml`, `$DSH_HOME/profiles/<name>/cordis.patch.yml`), and `$DSH_HOME/.credentials.yaml` for credential references — plus the official CLI's login state at `~/.commandcode/auth.json`, the credential environment variables listed below, and the public plan pages under `https://commandcode.ai/docs/` (the same pages a browser opens, with no credential attached). Nothing else. |
+| **Writes** | Two files, both under `$DSH_HOME/dsh-commandcode-quota/` (directory `0700`, files `0600`): `last-report.json`, the snapshot the card shows, which carries a short non-reversible digest of the key so it can tell whether it belongs to the account currently configured; and `catalog.json`, the parsed per-model allowances, which holds no credential material at all. The key itself is never in either. Delete them any time; the plugin recreates them. |
+| **Sends** | HTTPS to `https://api.commandcode.ai` with **your own** key, and to `https://commandcode.ai/docs/…` with no key at all. No other host appears in the code. |
 | **Collects** | Nothing. No telemetry, no analytics, no error reporting, no identifiers. |
 | **Install** | Runs nothing. No `postinstall` script, no downloaded code, no remote configuration. |
 
@@ -39,6 +39,11 @@ being retried silently. Each endpoint also gets 30 seconds to answer —
 that misses the deadline is dropped and named in the report rather than replaced
 with an older number. A `200` response that carries the vendor's own failure
 envelope (`{"success":false,…}`) counts as a failed read too.
+
+The per-model allowances in the settings panel come from those public docs pages, not from
+your account: a check sends `HEAD` first and downloads a page only when its ETag says the
+vendor changed it (about 200 KB, at most one check a day by default — `COMMANDCODE_CATALOG_TTL_MS`
+moves that). Only the parsed numbers are stored, never the page.
 
 ### Host config
 
@@ -72,9 +77,10 @@ Your Command Code key is discovered in this order, and used for nothing except t
    `apiKey`, or its `apiKeyEnv` resolved through the environment and
    `$DSH_HOME/.credentials.yaml`.
 3. Environment variables `COMMANDCODE_API_KEY`, `COMMAND_CODE_API_KEY`,
-   `CMD_API_KEY`, then any variable whose name contains `commandcode`. The one
-   exception is this plugin's own `COMMANDCODE_QUOTA_TIMEOUT_MS`, which is a
-   millisecond count and is never read as a key.
+   `CMD_API_KEY`, then any variable whose name contains `commandcode`. The
+   exceptions are this plugin's own `COMMANDCODE_QUOTA_TIMEOUT_MS` and
+   `COMMANDCODE_CATALOG_TTL_MS`, which are millisecond counts and are never read
+   as keys.
 4. The same names inside `$DSH_HOME/.credentials.yaml` (`refs.<NAME>`).
 5. `~/.commandcode/auth.json`, the official `command-code` CLI's login state.
 

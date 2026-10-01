@@ -22,7 +22,14 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
-import { credentialFingerprint, fetchQuotaReport, quotaSnapshotPath } from './quota.mjs'
+import { credentialFingerprint, configuredModelIds, fetchQuotaReport, quotaSnapshotPath } from './quota.mjs'
+import {
+  needsRevalidate,
+  readCatalogCache,
+  resolveCatalogTtlMs,
+  resolveCatalogView,
+  syncCatalog,
+} from './catalog.mjs'
 
 /** Plugin name shown in the Loader inventory. */
 export const name = 'commandcode-quota'
@@ -266,6 +273,77 @@ export function apply(ctx) {
   let inFlight
 
   /**
+   * The catalog sync in progress, if any.
+   *
+   * The catalog is a second, slow-moving dataset: what each model in the plan can
+   * call. It never rides the quota read's critical path — the view is served from
+   * local data (cache, else the bundled seed) and the revalidation runs behind it.
+   *
+   * @type {Promise<unknown> | undefined}
+   */
+  let catalogInFlight
+
+  /**
+   * Ensure a catalog view is available, revalidating only when asked.
+   *
+   * A plain poll (the sidebar card) never spends a request on the catalog: the
+   * settings panel is the surface that asks for it, and it says so
+   * (`catalog: true`) — which is also the moment the "overdue for a check?"
+   * question is evaluated. `catalogRefresh: true`, the check-update button,
+   * forces one whatever the TTL says.
+   *
+   * "Changed only" is enforced upstream: the sync probes each page with a
+   * 0-byte HEAD and reuses the cache when the vendor's ETag is unchanged, so a
+   * check that finds nothing new costs no body download and no re-parse.
+   *
+   * @param planId - the account's plan, or undefined when it is not known yet.
+   * @param options.check - whether this caller wants the "is it time?" question asked.
+   * @param options.refresh - force a check and wait for it.
+   * @returns the catalog view for this plan.
+   */
+  const catalogFor = async (planId, { check = false, refresh = false } = {}) => {
+    const ttlMs = resolveCatalogTtlMs()
+    const cached = readCatalogCache()
+    const due = (check || refresh) && needsRevalidate({ catalog: cached, planId, ttlMs })
+    if ((due || refresh) && catalogInFlight === undefined) {
+      // Failures are recorded inside the catalog itself, so a rejected promise
+      // here has nothing left to report.
+      catalogInFlight = syncCatalog({ planId, ttlMs })
+        .catch(() => undefined)
+        .finally(() => { catalogInFlight = undefined })
+    }
+    if ((due || refresh) && catalogInFlight !== undefined) await catalogInFlight
+    // Cache first, bundled seed second, an honest "nothing yet" last.
+    return resolveCatalogView({
+      planId,
+      configuredModels: configuredModelIds(),
+      ttlMs,
+    })
+  }
+
+  /**
+   * Attach the catalog view to a report result.
+   *
+   * The browser half renders the plan's per-model allowances from it. A missing
+   * catalog never fails the report: the worst case is a view that says it has not
+   * synced yet.
+   *
+   * @param result - the RPC result for the quota report.
+   * @param options.check - ask whether the catalog is overdue for a check.
+   * @param options.refresh - wait for a real revalidation before answering.
+   * @returns the result with `value.catalog` added.
+   */
+  const withCatalog = async (result, { check = false, refresh = false } = {}) => {
+    if (result?.ok !== true) return result
+    const value = result.value
+    // A report whose plan block failed still has a plan id worth using: the
+    // previous read persisted it.
+    const planId = value?.plan?.planId ?? cache?.report?.plan?.planId ?? snapshot?.report?.plan?.planId
+    const catalog = await catalogFor(planId, { check, refresh })
+    return { ...result, value: { ...value, catalog } }
+  }
+
+  /**
    * Read once from upstream, then cache and persist the result.
    * @returns the RPC result for this read; never throws.
    */
@@ -379,7 +457,17 @@ export function apply(ctx) {
       return failure(rpcId, 'bad-request', `method ${JSON.stringify(message.method)} does not match endpoint ${JSON.stringify(ENDPOINT)}`, { issues: [] })
     }
 
-    return envelope(rpcId, await report({ allowStale: true }))
+    // The catalog is a second dataset with its own cadence. It rides along with
+    // every answer, but a check only happens when the settings panel asks for one
+    // (`catalog: true`), or when the button forces it (`catalogRefresh: true`) —
+    // the card's minute-by-minute poll never spends a request on it.
+    const payload = message.payload !== null && typeof message.payload === 'object' ? message.payload : undefined
+    const result = await report({ allowStale: true })
+    const catalogOptions = {
+      check: payload?.catalog === true,
+      refresh: payload?.catalogRefresh === true,
+    }
+    return envelope(rpcId, await withCatalog(result, catalogOptions))
   }
 
   ctx.effect(() => ctx.connection.fetch.register({
@@ -389,7 +477,7 @@ export function apply(ctx) {
     fetch: serve,
   }))
 
-  registerQuotaCommand(ctx, report)
+  registerQuotaCommand(ctx, report, withCatalog, catalogFor)
 
   ctx.logger.info(`cc-quota: serving quota reports on ${ROUTE_PATH}`)
 }
@@ -405,8 +493,10 @@ export function apply(ctx) {
  *
  * @param ctx - host plugin context.
  * @param report - the cached report producer shared with the Fetch route.
+ * @param withCatalog - attaches the catalog view to a report result.
+ * @param catalogFor - local catalog view producer, for the `--models` argument.
  */
-function registerQuotaCommand(ctx, report) {
+function registerQuotaCommand(ctx, report, withCatalog, catalogFor) {
   const commands = ctx.get('commands')
   if (commands === undefined) {
     ctx.logger.info('cc-quota: no command runtime composed; /quota not registered')
@@ -414,8 +504,11 @@ function registerQuotaCommand(ctx, report) {
   }
   ctx.effect(() => commands.register({
     name: 'quota',
-    description: 'Show Command Code plan credit usage',
-    handler: async () => {
+    description: 'Show Command Code plan credit usage (--models for per-model allowances)',
+    handler: async ({ rawInput } = {}) => {
+      const input = String(rawInput ?? '')
+      const wantsModels = /(^|\s)--models(\s|$)/.test(input)
+      const wantsRefresh = /(^|\s)--refresh(\s|$)/.test(input)
       const result = await report()
       if (!result.ok) {
         return { kind: 'error', text: result.error.message }
@@ -423,7 +516,86 @@ function registerQuotaCommand(ctx, report) {
       if (result.value !== null && typeof result.value === 'object' && result.value.configured === false) {
         return { kind: 'error', text: 'No Command Code provider is configured on this host.' }
       }
-      return { kind: 'success', text: formatReportText(result.value) }
+      if (!wantsModels) {
+        return { kind: 'success', text: formatReportText(result.value) }
+      }
+      // The catalog is local data; `--refresh` is the only form that spends a
+      // request, and it spends it on a 0-byte ETag probe when nothing changed.
+      const withCatalogView = await withCatalog(result, { refresh: wantsRefresh })
+      return { kind: 'success', text: formatCatalogText(withCatalogView.value.catalog) }
     },
   }), 'cc-quota: /quota command')
+}
+
+/**
+ * Render the per-model allowance catalog as chat text.
+ *
+ * One model per line with labelled figures rather than columns: chat surfaces
+ * wrap freely, and the README already learned that aligned columns only look
+ * aligned in the font they were written in.
+ *
+ * @param catalog - the catalog view attached to the report.
+ * @returns the text, or a sentence saying why there is nothing to show.
+ */
+function formatCatalogText(catalog) {
+  if (catalog === null || typeof catalog !== 'object') {
+    return 'Model allowances are unavailable: this host has no catalog support.'
+  }
+  const lines = []
+  const plan = catalog.planName ?? catalog.planId ?? 'this plan'
+  lines.push(`Command Code · ${plan} · per-model request allowances`)
+  if (typeof catalog.docUrl === 'string') lines.push(`source ${catalog.docUrl}`)
+  if (catalog.inferredFrom !== undefined) {
+    lines.push(`note: the vendor publishes no page for this plan; figures are taken from ${catalog.inferredFrom}`)
+  }
+  const state = catalog.verified === true
+    ? `synced ${catalog.updatedAt ?? '—'}`
+    : 'not synced yet — showing the baseline shipped with the plugin'
+  lines.push(`${state}${catalog.stale === true ? ' (overdue for a check)' : ''}`)
+
+  const models = Array.isArray(catalog.models) ? catalog.models : []
+  if (models.length === 0) {
+    lines.push('No model allowances for this plan.')
+  } else {
+    if (catalog.basis !== null && catalog.basis !== undefined) {
+      lines.push(`basis: the vendor's own estimate, ${catalog.basis.inputTokens} in / ${catalog.basis.outputTokens} out / ${catalog.basis.cacheReadTokens} cached tokens per request`)
+    }
+    const estimated = models.filter((model) => model.estimated === true)
+    lines.push('')
+    for (const model of estimated) {
+      lines.push(`${model.configured === true ? '* ' : ''}${model.name} · 5h ${volume(model, 'fiveHour')} · week ${volume(model, 'week')} · month ${volume(model, 'monthly')}`)
+    }
+    const withoutNumbers = models.length - estimated.length
+    if (withoutNumbers > 0) {
+      lines.push(`(${withoutNumbers} more model(s) are available on this plan without a published allowance)`)
+    }
+  }
+  if (catalog.planLevel !== null && catalog.planLevel !== undefined) {
+    // Two different figures, two different methods: never mixed into one number.
+    lines.push(`plan-level estimate (a different basis, not comparable): ${catalog.planLevel.requestsText}`)
+  }
+  for (const failure of catalog.failures ?? []) {
+    lines.push(`unavailable: ${failure.code}${failure.message === undefined ? '' : ` (${failure.message})`}`)
+  }
+  return lines.join('\n')
+}
+
+/**
+ * One figure from a catalog model row.
+ *
+ * Free models have no finite count — the vendor prints "Free" — and JSON cannot
+ * carry `Infinity`, so a row read back from disk or over the RPC has `null` where
+ * the live value was infinite. `free` is the field that says so; never render a
+ * bare `—` for a model the vendor lists as free.
+ */
+function volume(model, key) {
+  if (model?.free === true) return 'Free'
+  return count(model?.[key])
+}
+
+/** Same rendering rule as the card: the vendor's own three-significant-digit rounding. */
+function count(value) {
+  if (value === null || value === undefined) return '—'
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 'Free'
+  return Number(value.toPrecision(3)).toLocaleString('en-US')
 }

@@ -96,7 +96,11 @@ const KEY_ENV_PATTERN = /command_?code/i;
  * 正落在这个模式里：把它当密钥用，读不到额度是小事，把一个超时毫秒数当 Bearer
  * 发出去才是问题。
  */
-const KEY_ENV_EXCLUDED = new Set([TIMEOUT_ENV_NAME]);
+const KEY_ENV_EXCLUDED = new Set([
+  TIMEOUT_ENV_NAME,
+  // catalog.mjs 的目录 TTL 开关：同样只是本插件的一个旋钮，不是密钥。
+  'COMMANDCODE_CATALOG_TTL_MS',
+]);
 
 /** 判定一个 baseURL 是否指向 Command Code 的官方 API。 */
 const COMMANDCODE_HOST_PATTERN = /(^|\/\/|\.)commandcode\.ai(\/|$)/i;
@@ -307,7 +311,7 @@ function readOfficialAuthFile(file) {
  * 既可能写在 `baseURL` 之前也可能之后，只往后看会漏。
  *
  * @param {string} text settings.yaml 的内容。
- * @returns {Array<{ baseURL: string, keyRef?: string, apiKey?: string }>} 命中的路由，按文件出现顺序。
+ * @returns {Array<{ baseURL: string, keyRef?: string, apiKey?: string, models: string[] }>} 命中的路由，按文件出现顺序。
  */
 export function discoverRoutes(text) {
   const lines = text.split(/\r?\n/).map((rawLine) => {
@@ -328,7 +332,7 @@ export function discoverRoutes(text) {
     if (base === null || !COMMANDCODE_HOST_PATTERN.test(base[1])) continue;
 
     const indent = line.indent;
-    const route = { baseURL: base[1] };
+    const route = { baseURL: base[1], models: [] };
     // Only same-indent siblings belong to this provider row; a deeper line is a
     // nested field (a model entry, say) and a shallower one closes the block.
     const readSibling = (candidate) => {
@@ -344,12 +348,53 @@ export function discoverRoutes(text) {
     for (let back = index - 1; back >= 0 && (lines[back].blank || lines[back].indent >= indent); back -= 1) {
       readSibling(lines[back]);
     }
+    let hasModels = false;
     for (let ahead = index + 1; ahead < lines.length && (lines[ahead].blank || lines[ahead].indent >= indent); ahead += 1) {
       readSibling(lines[ahead]);
+      if (lines[ahead].indent === indent && /^models:\s*$/.test(lines[ahead].trimmed)) hasModels = true;
+    }
+    // 这个路由下面挂着哪些模型：`models:` 之后的更深层 `- id: …` 行。
+    // 用户配了哪些模型是「目录里把我自己用的置顶」的依据，只读不写、不参与鉴权。
+    if (hasModels) {
+      for (let ahead = index + 2; ahead < lines.length; ahead += 1) {
+        const candidate = lines[ahead];
+        if (candidate.blank) continue;
+        if (candidate.indent <= indent) break;
+        const id = /^(?:-\s*)?id:\s*["']?([^"'\s]+)["']?/.exec(candidate.trimmed);
+        if (id !== null) route.models.push(id[1]);
+      }
     }
     routes.push(route);
   }
   return routes;
+}
+
+/**
+ * 用户在 DSH 里给 Command Code 路由配了哪些模型。
+ *
+ * 只用于把「你自己在用的模型」在目录里置顶显示；找不到就返回空数组，目录照常
+ * 展示全部。与凭据解析共用同一批候选文件，但**不读密钥**。
+ *
+ * @param {object} [options] 与 {@link resolveApiKey} 相同的 home/env 锚点。
+ * @returns {string[]} 去重后的模型 id 列表。
+ */
+export function configuredModelIds(options = {}) {
+  const env = options.env ?? process.env;
+  const home = options.home ?? os.homedir();
+  const dshHome = options.dshHome ?? env.DSH_HOME ?? path.join(home, '.dsh');
+  const ids = [];
+  for (const file of dshConfigFiles(dshHome, home)) {
+    let text;
+    try {
+      text = readFileSync(file, 'utf8');
+    } catch {
+      continue;
+    }
+    for (const route of discoverRoutes(text)) {
+      for (const id of route.models) ids.push(id);
+    }
+  }
+  return [...new Set(ids)];
 }
 
 /**

@@ -28,6 +28,7 @@ No browser tab, no login, no guessing how much of the plan is left.
 | **Instant, then live** | The card is on screen about 2 ms after a restart, and live about a second later |
 | **Quiet when it should be** | No Command Code account? The card does not render at all |
 | **Bilingual** | The card follows your DSH interface language (中文 / English) |
+| **Per-model allowances** | What this plan gives each model, in Settings — the models you configured first |
 
 Everything is read from **your own account's data** — window count, caps and percentages come from the API, never assumed. GOAT, Pro, Provider, Max and Teams work; a plan that reports no rolling windows simply renders no rows. (The $1 **Go** tier is the exception — it has no API access, so the card has nothing to render there.)
 
@@ -47,7 +48,7 @@ dsh --version          # needs 0.1.5-rc.1 or newer
 npm i -g @deepseek-ai/dsh@latest
 ```
 
-Note that the plugin's 158 offline checks also **pass** on an older dsh — they never start dsh. So "the checks are green" does not mean it will work once installed.
+Note that the plugin's 244 offline checks also **pass** on an older dsh — they never start dsh. So "the checks are green" does not mean it will work once installed.
 
 ## Install
 
@@ -150,6 +151,20 @@ The sidebar is about 200 px of content width, and a laptop screen makes small ty
 - **Money only for the monthly allowance.** The 5-hour and weekly windows are pass/fail gates, not budgets; their dollar rows told a user nothing they could act on. Hover still shows exact figures.
 - **No pace verdict, no burn-rate forecast.** "Over pace" cannot be acted on by someone who has work to do, and a projected exhaustion date assumes a constant burn rate that credit usage never has. The host still exposes `projection` in its JSON for scripts.
 - **Nothing silent.** A row that disappears because its endpoint failed says so; a failure with nothing to fall back on says what went wrong in one readable line, with the full diagnostic text on hover.
+
+## Per-model allowances, in Settings
+
+The card answers *how deep am I*. **Settings → Call counts** answers the other question: *what would this plan give me if I only ever called this model?*
+
+Every model the plan can call, with requests per 5 hours, per week and per month — the models you configured in DSH first. Above the table sits the plan-level headline (`GOAT · $70 · ~75K requests`): a different figure on a different basis, labelled so the two are never read as one number.
+
+The figures are the vendor's, not ours. Each plan page publishes a per-model monthly budget, that model's per-token rates and the request shape the estimate assumes; the page itself computes the counts in the browser. The plugin reproduces that arithmetic and rounds exactly like the site (`Number(x.toPrecision(3))`). `tests/catalog.test.mjs` pins the outcome against the numbers the vendor's own pages render — 244 rows across four plans, zero mismatches.
+
+**It asks only when it has to.** The docs pages ignore conditional requests (the server hands out an ETag and then answers `200` to `If-None-Match` — there is no 304 branch to lean on), so the plugin does the check itself: `HEAD` for the page's ETag, 0 bytes, and only a real change downloads a body (about 200 KB, ~37 KB compressed). A check runs when you open the section and the local copy is over a day old, or when you press **Check for updates**; the sidebar card never triggers one. A baseline ships inside the plugin, so a first run — or a machine with no network — still shows figures, labelled *baseline, not synced yet*.
+
+Where the plan page lists no figure at all, the pricing page's own calculator fills it in: same allowance, same rates, and a request shape derived from the provider exactly the way the site derives it (those rows are tagged *derived*). A model the vendor gives away reads `Free`.
+
+Nothing is guessed where the vendor is silent. A model neither page prices reads `—`, never `0`; a plan with no per-model page of its own says so instead of borrowing another tier's numbers (Ultra is shown from Max's table and labelled an inference); a failed check keeps the previous figures and prints how old they are.
 
 ## The `/quota` command
 
@@ -295,6 +310,8 @@ The CLI's human-readable output is Chinese; `--json` is language-neutral and is 
 | Symptom | What it means |
 |---|---|
 | No card at all | This host has no Command Code provider configured, so the plugin stays invisible by design. Check Settings → Models. |
+| The settings section says *baseline, not synced yet* | Nothing has been fetched on this machine yet — a fresh install, an offline host, or a check that has not run. Press **Check for updates**; what you are reading is the copy shipped with the plugin, dated by its check time. |
+| **Check for updates** returns instantly and nothing changes | That is the good case: the 0-byte `HEAD` found the page's ETag unchanged, so no body was downloaded. The status line shows when the last check happened. |
 | The card shows an error | The card says what it can ("cannot reach Command Code", "the API key was rejected"); hover it for the full diagnostic text. |
 | A line under the rows saying **N reading(s) unavailable** (`3 项数据这次没取到`) | N of the four upstream readings did not count this time. Each endpoint gets 30 s (`COMMANDCODE_QUOTA_TIMEOUT_MS` moves that, in ms, 1 s–120 s); past it the reading is dropped rather than shown, and the usual cause is Command Code itself being slow — on 2026-09-30 its own `server-timing` header reported 14 s for `/alpha/usage/summary` while `/alpha/billing/credits` answered in 43 ms. Hover the card to see which endpoint failed; the next poll retries on its own. A missing monthly row on the same card is the same cause, one endpoint over. |
 | `/plugins/dsh-commandcode-quota/client.js` returns 404 | The client bundle was not composed. Check that `package.json` declares `dsh.client.platform === "web"` and `exports["./client"]`. On the desktop client this probe proves nothing: even a built-in bundle such as `dsh-client-ui-sidebar` returns 404 there, because the desktop renderer does not fetch its bundles from that HTTP server. |
@@ -316,7 +333,7 @@ The CLI's human-readable output is Chinese; `--json` is language-neutral and is 
 # 1. React is needed only by the component test and the preview page
 mkdir .devdeps && cd .devdeps && npm init -y && npm install react@18 react-dom@18 && cd ..
 
-# 2. Everything at once — 158 checks, one verdict, no network, no real credentials
+# 2. Everything at once — 244 checks, one verdict, no network, no real credentials
 node scripts/check.mjs            # release check: static + secret scan + every suite below
 node scripts/verify.mjs           # add --live to also hit a real account
 node scripts/verify.mjs --quiet   # one summary line per suite
@@ -324,6 +341,7 @@ node scripts/verify.mjs --quiet   # one summary line per suite
 
 ```text
 ok    quota   (discovery contract)            27 checks
+ok    catalog (docs catalog, change detection) 86 checks
 ok    host    (route, cache, concurrency)     30 checks
 ok    client  (rendering, boundaries)         59 checks
 ok    dynamic (drift, resets, bad payloads)   39 checks
@@ -349,6 +367,8 @@ Determinism is checked by repetition, not by reading the code: `for i in 1 2 3 4
 - **No per-model allowance breakdown.** Command Code allocates a per-model share of the monthly budget, but the `/alpha` endpoints do not expose that table, so the card reports the total only.
 - **No history.** Every read is a live snapshot; nothing is stored except the one cached report.
 - **Command Code only.** This does not replace DSH's own local token statistics (`$DSH_HOME/dsh-usage/`).
+- **The catalog follows one plan at a time.** A check fetches the page for the plan you are on, plus the shared pricing page that maps plans to models and carries the plan-level estimate — not every tier's page. Switch plans and the next check picks the new one up.
+- **Provider and Teams publish no per-model table.** Both show the plan-level figure only (Provider is metered, Teams publishes one number). Ultra has no page of its own; it is shown from Max's table and labelled as an inference.
 - **The vendor's own latency is the read's deadline.** Healthy, all four endpoints answer in about a second; each gets 30 s before its reading is dropped, and `COMMANDCODE_QUOTA_TIMEOUT_MS` overrides that. A dropped reading is never filled in with an older number: the card says how many are missing and names them on hover.
 - **Framework seams.** See [Compatibility](#compatibility) — a future dsh release will need a look.
 

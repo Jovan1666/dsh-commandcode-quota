@@ -14,18 +14,21 @@
     "sidebar",
     "llm"
   ],
-  "description": "Command Code plan quota panel for DeepSeek Harness: monthly / 5-hour / weekly credit windows with reset countdowns, above the sidebar Settings seat.",
+  "description": "Command Code plan quota panel for DeepSeek Harness: monthly / 5-hour / weekly credit windows with reset countdowns above the sidebar Settings seat, plus per-model request allowances in the settings panel.",
   "type": "module",
   "main": "./index.js",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
+    "./catalog": "./catalog.mjs",
     "./package.json": "./package.json"
   },
   "files": [
     "index.js",
     "client.js",
     "quota.mjs",
+    "catalog.mjs",
+    "catalog.seed.json",
     "cli",
     "preview",
     "cordis.patch.yml",
