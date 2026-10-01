@@ -4,6 +4,25 @@ All notable changes to this project are documented here.
 
 ## [Unreleased] — 2026-09-30
 
+### Added
+
+- **The plan's per-model allowances now live in Settings, not in a browser tab.** “What would this plan give
+  me if I only ever called this model?” is answered by a new section in the host's settings dialog: every model
+  the plan can call, with requests per 5 hours / week / month, the models the user configured first, and the
+  plan-level headline kept visibly separate from the per-model figures. Models the plan page skips are filled in
+  from the pricing page's own calculator (same vendor arithmetic, request shape derived from the provider like the
+  site does, tagged *derived*), and the models the vendor gives away read `Free` rather than “not published”. The numbers are the vendor's own: the
+  docs pages publish a per-model monthly budget, per-token rates and the request shape, then compute the counts
+  client-side; `catalog.mjs` reproduces that arithmetic and rounds like the site, and the new `catalog` suite
+  pins 244 rows across four plans against the numbers the vendor's own pages render.
+- **The catalog checks for updates without downloading anything when nothing changed.** The docs pages ignore
+  conditional requests (`If-None-Match` against an ETag the server just issued still answers `200`), so the sync
+  sends `HEAD` for the page's ETag — 0 bytes — and fetches a body only when the ETag moved. One check a day at
+  most, and only when the settings section is opened, plus a manual button; a baseline ships in the package so a
+  first run or an offline host still has figures, marked as unsynced.
+- **`node cli/cli.mjs --models`** prints the same table from the terminal, `--catalog-json` hands it to scripts,
+  `--refresh-catalog` forces a check, and `/quota --models` does it in a conversation.
+
 ### Fixed
 
 - **A slow Command Code cost the card three of its four readings, the monthly row
@@ -33,7 +52,10 @@ All notable changes to this project are documented here.
 
 ### Tests
 
-- Five new checks, and the suite is now 158 offline checks: a `200` failure envelope
+- The catalog brought its own suite: 82 checks over the parser, the change detection (a 0-byte HEAD probe
+  that must not download, an ETag that moved but whose body did not, a HEAD the gateway rejects), the seed's
+  recomputability, and the view's honesty rules. The offline suite is now 244 checks. The earlier vendor-latency
+  fix added five of them: a `200` failure envelope
   is a failed read, a slow endpoint that answers inside the deadline costs nothing,
   a reading past the deadline is dropped and named, the deadline can be moved
   through the environment, and the deadline variable is never mistaken for an API

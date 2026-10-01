@@ -37,7 +37,7 @@ jobs:
           echo '{"name":"devdeps","private":true}' > package.json
           npm install --no-audit --no-fund react@18 react-dom@18
 
-      # 158 项离线校验：不联网、不需要真实凭证，也不启动 dsh。
+      # 244 项离线校验：不联网、不需要真实凭证，也不启动 dsh。
       - name: 离线套件
         run: node scripts/verify.mjs
 
