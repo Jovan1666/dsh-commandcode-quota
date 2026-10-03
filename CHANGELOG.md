@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased] — 2026-10-02
+## [Unreleased] — 2026-10-04
 
 The section was slow to answer, and the reason was not the numbers: opening **Settings → Call counts**
 awaited the vendor check inside the request, so the panel's first byte came after every docs-page round trip.
