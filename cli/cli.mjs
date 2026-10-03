@@ -17,7 +17,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { PLAN_DOC_URLS, formatCount, needsRevalidate, readCatalogCache, readCatalogSeed, resolveCatalogView, syncCatalog } from '../catalog.mjs';
+import { CATALOG_TIMEOUT_MS, PLAN_DOC_URLS, formatCount, needsRevalidate, readCatalogCache, readCatalogSeed, resolveCatalogView, syncCatalog } from '../catalog.mjs';
 import { DEFAULT_API_BASE, QuotaError, TIMEOUT_ENV_NAME, credentialFingerprint, fetchQuotaReport, quotaSnapshotPath, resolveTimeoutMs } from '../quota.mjs';
 
 const BAR_WIDTH = 28;
@@ -77,6 +77,10 @@ function parseArgs(argv) {
       const value = Number(requireValue(argv, (index += 1), '--timeout'));
       if (!Number.isFinite(value) || value <= 0) throw new QuotaError('USAGE', '--timeout 需要一个正数毫秒值');
       options.timeoutMs = value;
+    } else if (arg === '--catalog-timeout') {
+      const value = Number(requireValue(argv, (index += 1), '--catalog-timeout'));
+      if (!Number.isFinite(value) || value <= 0) throw new QuotaError('USAGE', '--catalog-timeout 需要一个正数毫秒值');
+      options.catalogTimeoutMs = value;
     } else if (arg === '--key') {
       options.apiKey = requireValue(argv, (index += 1), '--key');
     } else if (arg === '--help' || arg === '-h') {
@@ -120,15 +124,18 @@ function printUsage() {
       '  --color / --no-color  强制开关 ANSI 颜色',
       '  --base <url>     API 基地址，默认 ' + DEFAULT_API_BASE,
       '  --timeout <ms>   单端点超时，默认 ' + resolveTimeoutMs() + '（可用 ' + TIMEOUT_ENV_NAME + ' 覆盖）',
+      '  --catalog-timeout <ms>  单页目录核对超时，默认 ' + CATALOG_TIMEOUT_MS + '（--refresh-catalog 最坏 4 次请求叠加上限）',
       '  --key <key>      显式 API key（优先级最高，会留在 shell 历史里）',
       '',
-      '  --models         打印当前套餐的「模型 → 5 小时/每周/每月次数」表（优先本地，不联网）',
+      '  --models         打印当前套餐的「模型 → 5 小时/每周/每月次数」表（数字取自本地缓存/内置基线，绝不核对官方）',
       '  --catalog-json   输出目录视图 JSON（脚本用，stdout 只有 JSON；诊断走 stderr）',
       '  --refresh-catalog 先核对官方目录再打印（可与 --models/--catalog-json 组合；单独用等于刷新后打印模型表）',
       '  --all-models     连「官方没给次数」的模型也列出',
       '  --plan <planId>  显式指定套餐（拿不到实时报告时用；也给目录命令用，单独用等于 --models）',
       '',
       '目录只读缓存与内置基线，只有 --refresh-catalog 会联网核对一次；套餐 id 取不到时用 --plan 指定。',
+      '注意：本地没有宿主快照时，目录命令会为了「现在是哪个套餐」问一次额度接口（最多 --timeout 那么久，',
+      '可用 --plan 完全避免）；官方文档页的核对只有 --refresh-catalog 会做。',
       '',
     ].join('\n'),
   );
@@ -385,11 +392,14 @@ function readLocalCatalog() {
  * 让「核对失败」永远只是降级信息，而不是把整个命令带走。
  *
  * @param {string|undefined} planId 当前套餐。
+ * @param {number|undefined} timeoutMs 单页超时；省略用 catalog.mjs 的默认值。
  * @returns {Promise<{ changed: boolean, failures: object[] }>} 核对结果。
  */
-async function refreshCatalogOnce(planId) {
+async function refreshCatalogOnce(planId, timeoutMs) {
   try {
-    const { changed, failures } = await syncCatalog({ planId });
+    // 这一跳是最慢的一跳：两个页面各要一次（HEAD + GET），默认每页 20 秒，
+    // 网关不理 HEAD 时最坏 4×20s。调用方必须能给它一个上限。
+    const { changed, failures } = await syncCatalog({ planId, timeoutMs });
     return { changed, failures };
   } catch (error) {
     return { changed: false, failures: [{ code: 'CATALOG_SYNC', message: oneLine(error instanceof Error ? error.message : error) }] };
@@ -675,17 +685,19 @@ async function runCatalog(options) {
   let catalog = readLocalCatalog();
   let refresh;
   if (options.refreshCatalog) {
-    refresh = await refreshCatalogOnce(context.planId);
+    refresh = await refreshCatalogOnce(context.planId, options.catalogTimeoutMs);
     // syncCatalog 已经把新目录原子写进缓存，重新读一次就是最新的一份。
     catalog = readLocalCatalog();
   }
-  let view = resolveCatalogView({ planId: context.planId, configuredModels: [] });
+  // 这份目录已经读进来了，就不要再让视图去读一遍同一个文件。
+  const viewOf = (planId) => resolveCatalogView({ catalog, planId, configuredModels: [] });
+  let view = viewOf(context.planId);
   // 不知道套餐、目录里又只有一张表时按它展示并在表头写明：只有一种可能时，
   // 还要用户先猜对 id 才看得到数字，没有意义。
   if (view.models.length === 0 && context.planId === undefined) {
     const only = Object.keys(catalog?.plans ?? {});
     if (only.length === 1) {
-      view = resolveCatalogView({ planId: only[0], configuredModels: [] });
+      view = viewOf(only[0]);
       context = { ...context, planId: only[0], source: 'single-plan' };
     }
   }

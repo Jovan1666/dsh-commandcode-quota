@@ -1050,12 +1050,16 @@ const viewFile = tmpFile('view.json')
     assert.equal(result.verified, false)
     assert.ok(result.warnings.includes('catalog-bundled-baseline'))
   })
-  check('a plan the catalog does not carry yields an empty list and a named warning', () => {
+  check('a plan with no per-model page still gets its name and its plan-level headline', () => {
+    // Teams publishes one number, not a table: the overview row is what it has,
+    // and it is also the only place this plan's display name comes from.
     const result = view({ planId: 'teams-pro' })
     assert.deepEqual(result.models, [])
     assert.deepEqual(result.coverage, { published: 0, derived: 0, available: 0 })
-    assert.equal(result.planName, undefined)
+    assert.equal(result.planName, 'Team Pro')
     assert.equal(result.docUrl, null)
+    assert.equal(result.planLevel.label, 'Team Pro')
+    assert.equal(result.planLevel.requests, 35_000)
     assert.ok(result.warnings.includes('catalog-plan-not-listed:teams-pro'))
   })
   check('the failures of the last round are surfaced in the view', () => {
@@ -1215,6 +1219,140 @@ console.log('the committed fixtures')
 }
 
 /* ------------------------------------------------------------------ tail */
+
+/** A catalog object with everything a view needs and nothing else. */
+const stubCatalog = (checkedAt, extra = {}) => ({
+  kind: catalog.CATALOG_KIND,
+  version: catalog.CATALOG_VERSION,
+  schema: catalog.CATALOG_SCHEMA,
+  checkedAt,
+  plans: {},
+  failures: [],
+  ...extra,
+})
+
+console.log('the plan-level row is picked by plan id, not by a name prefix')
+{
+  /**
+   * The pricing page's overview table and its row order are the vendor's, and
+   * `Max 10×` is a prefix of `Max 20×`. Matching by "label starts with the plan
+   * name" therefore hands the Ultra user Max 10×'s figures the moment the two
+   * rows swap places — plausible-looking and wrong by half.
+   */
+  const rows = [
+    { label: 'Max 20×', credits: 300, usageText: '~370K requests', requests: 370_000 },
+    { label: 'Max 10×', credits: 150, usageText: '~150K requests', requests: 150_000 },
+    { label: 'Provider', credits: 0, usageText: 'pay as you go', requests: undefined },
+  ]
+  const priced = stubCatalog(iso(NOW), {
+    planLevel: { rows, fetchedAt: iso(NOW), sourceUrl: catalog.PRICING_DOC_URL },
+  })
+  const levelFor = (planId) => catalog.catalogView({ catalog: priced, bundled: false, planId, now: NOW }).planLevel
+
+  check('Ultra reads the Max 20× row even when it is listed first', () => {
+    assert.equal(levelFor('individual-ultra')?.label, 'Max 20×')
+    assert.equal(levelFor('individual-ultra')?.credits, 300)
+  })
+  check('Max reads the 10× row it is actually sold as', () => {
+    assert.equal(levelFor('individual-max')?.label, 'Max 10×')
+    assert.equal(levelFor('individual-max')?.credits, 150)
+  })
+  check('a plan the pricing table does not price says so instead of borrowing a row', () => {
+    assert.equal(levelFor('teams-pro'), null)
+    assert.equal(levelFor('individual-go'), null, 'Go has no row in this fixture, so nothing may be returned')
+  })
+}
+
+console.log('a plan the vendor never published a page for')
+{
+  /**
+   * `individual-provider` and `teams-pro` have no docs page at all. Every check
+   * of them used to re-send a full round of requests, forever, because that plan
+   * can never appear in `plans` — so "the local copy has never carried this plan"
+   * stayed true no matter how often it was asked.
+   */
+  const withPage = stubCatalog(iso(NOW), {
+    plans: { 'individual-goat': { planId: 'individual-goat' } },
+    unpublished: ['individual-provider'],
+  })
+  check('an unpublished tier is not re-asked on every mount', () => {
+    assert.equal(catalog.needsRevalidate({ catalog: withPage, planId: 'individual-provider', now: NOW + HOUR }), false)
+    // …while a plan that merely is not in the local copy yet is still immediate.
+    assert.equal(catalog.needsRevalidate({ catalog: withPage, planId: 'individual-max', now: NOW + HOUR }), true)
+    // …and once the day is up, even the unpublished tier is re-checked.
+    assert.equal(catalog.needsRevalidate({ catalog: withPage, planId: 'individual-provider', now: NOW + 25 * HOUR }), true)
+  })
+
+  const noCache = stubCatalog(iso(NOW), { plans: {}, noData: true })
+  check('a check that changed nothing is not retried on every request', () => {
+    // No cache file exists after a round where every page failed, so `failures`
+    // alone cannot express the backoff: `noData` has to.
+    assert.equal(catalog.needsRevalidate({ catalog: noCache, now: NOW + 1_000 }), false)
+    assert.equal(catalog.needsRevalidate({ catalog: noCache, now: NOW + catalog.CATALOG_MIN_RETRY_MS }), true)
+  })
+
+  const unpublishedView = catalog.catalogView({
+    catalog: withPage, bundled: false, planId: 'individual-provider', now: NOW,
+  })
+  check('the panel is told the vendor publishes nothing for this tier', () => {
+    assert.ok(unpublishedView.warnings.includes('catalog-plan-unpublished:individual-provider'))
+  })
+}
+
+console.log('the probe hop is one round trip, not one per page')
+{
+  /**
+   * Both pages' 0-byte ETag probes have to be in flight together. Counting
+   * requests cannot tell the difference — a sequential implementation makes
+   * exactly the same two — so the fake server here *proves* the overlap: the
+   * pricing probe does not answer until the plan page's probe has arrived. A
+   * sequential implementation never gets there and the wait below fails it.
+   */
+  const overlap = []
+  let releasePricing
+  const pricingHeld = new Promise((resolve) => { releasePricing = resolve })
+  const fetchImpl = async (url, options = {}) => {
+    const method = options.method ?? 'GET'
+    const page = url === GOAT_URL ? 'plan' : 'pricing'
+    overlap.push(`${method} ${page}`)
+    if (page === 'pricing') await pricingHeld
+    else if (overlap.some((entry) => entry === 'HEAD pricing')) releasePricing()
+    return response({ status: 200, etag: `"${page}-v1"`, url, body: method === 'HEAD' ? undefined : HTML_PROLOGUE + goatFixture })
+  }
+
+  const raced = await Promise.race([
+    sync(tmpFile('concurrent.json'), { fetchImpl, calls: [], plan: () => [], pricing: () => [], gets: () => 0 }, NOW),
+    new Promise((resolve) => { setTimeout(() => resolve('timeout'), 3_000) }),
+  ])
+  check('both page probes go out together instead of one after the other', () => {
+    assert.notEqual(raced, 'timeout', 'the probes were serialized: the second page was never asked while the first waited')
+    // Both probes were in flight at once: the pricing one could only answer after
+    // the plan one had arrived, and it did answer. (A first sync also downloads
+    // both bodies, which is why this counts probes rather than all requests.)
+    assert.equal(overlap.filter((entry) => entry === 'HEAD plan').length, 1)
+    assert.equal(overlap.filter((entry) => entry === 'HEAD pricing').length, 1)
+  })
+}
+
+/** A round where every page failed must still leave a cache behind: it is the
+ * only place the next call can learn that the attempt happened at all. */
+console.log('a check that produced nothing still records the attempt')
+{
+  const file = tmpFile('no-data.json')
+  const dead = docsFetch({
+    goat: { head: new Error('socket hang up'), get: new Error('socket hang up') },
+    pricing: { head: new Error('socket hang up'), get: new Error('socket hang up') },
+  })
+  const result = await sync(file, dead, NOW)
+  check('the attempt is written down with its failures and no data', () => {
+    assert.equal(result.catalog.noData, true)
+    assert.equal(result.failures.length, 2)
+    assert.ok(existsSync(file), 'nothing was written, so nothing rate-limits the next attempt')
+    const stored = catalog.readCatalogCache({ file })
+    assert.equal(stored?.noData, true)
+    assert.equal(stored?.failures.length, 2)
+  })
+}
 
 rmSync(tmpRoot, { recursive: true, force: true })
 

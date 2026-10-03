@@ -2,6 +2,75 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] — 2026-10-02
+
+The section was slow to answer, and the reason was not the numbers: opening **Settings → Call counts**
+awaited the vendor check inside the request, so the panel's first byte came after every docs-page round trip.
+Measured with `NET_MS=300` per round trip: **1593 ms → 368 ms** on a cold profile, and a card poll's payload
+**22 096 B → 1 056 B**.
+
+### Fixed
+
+- **The settings panel waited out the whole vendor check before drawing anything.** `catalogFor` awaited
+  `syncCatalog` in the request path whenever the local copy was missing or a day old — 4 sequential round trips
+  on a first run (HEAD+GET for two pages), 2 on every later check. The view is now built from local data and
+  returned immediately, with `catalog.syncing: true` in it; the sync runs behind the answer, and only the
+  explicit "check for updates" button waits (that is what pressing it means). The section shows
+  *checking the official data in the background* and comes back for the result by itself — at most six times,
+  then it stops asking rather than turning an open panel into a poll.
+- **The check itself was four round trips where two will do.** Both pages' 0-byte ETag probes now go out
+  together, and so do the two bodies, so a check that finds nothing new costs one round trip and a first sync
+  costs two instead of four. `tests/catalog.test.mjs` proves the overlap with a fake server that will not answer
+  the second probe until the first has arrived.
+- **A failed check was retried on every single request, forever.** A round where no page parsed wrote no cache
+  file at all — so `needsRevalidate` saw "no local copy" and asked again on the next request: three consecutive
+  panel opens cost 4 catalog round trips each, and with a black-holed docs host one open took **80 s** (four
+  20 s deadlines). The attempt is now recorded (`noData` + `checkedAt` + its failures) even when it produced
+  nothing, and the host holds off for a few seconds before trying again.
+- **A tier the vendor never published a page for was probed on every mount.** `individual-provider` and
+  `teams-pro` can never appear in `plans`, so "the local copy has never carried this plan" stayed true no matter
+  how often it was asked. The catalog now records those ids as `unpublished` and re-checks them on the TTL only.
+- **Ultra could have been shown Max 10×'s figures.** The plan-level overview row was found by
+  `label.startsWith(planName)`, and `Max 10×` is a prefix of `Max 20×` — so a row swap on the vendor's pricing
+  page would have halved Ultra's plan-level allowance, plausibly and silently. The row is now looked up by plan
+  id through `PLAN_LEVEL_LABELS`, which until now was dead code (Ultra, Provider and Teams Pro were getting no
+  plan-level row at all).
+- **A key pasted while the card was up could still see the previous account's numbers.** The snapshot path
+  compares the credential fingerprint; the 15-second in-process cache did not, so switching keys (or plans)
+  could be answered from the old account for the rest of the window. The cache entry carries its fingerprint now,
+  and the fingerprint itself is memoized against a stat-based signature of the settings and credential files —
+  cheaper per poll than the old path, and correct the moment a file or a candidate environment variable changes.
+- **The card's poll carried a catalog it never reads** — 97 % of a 22 KB response, re-serialized and re-parsed
+  every minute. The catalog is attached only when the caller asks for it (`catalog: true`, which is what the
+  settings section sends).
+- **`--refresh-catalog` could block for over a minute with no knob.** `syncCatalog` took no timeout, so the
+  worst case was 4 × 20 s of docs-page deadlines on top of the plan probe's own `--timeout`. It takes
+  `--catalog-timeout <ms>` now, and `--help` prints the value it will use. The same `--help` no longer claims
+  `--models` never touches the network: with no host snapshot it asks the API once for the plan id (say `--plan`
+  to avoid it).
+- **A hot window that got a snapshot went quiet for a minute.** The snapshot branch took over the polling cadence
+  outright, bypassing both the 15-second "close to the cap" rule and the 99.5 % ceiling; it now only replaces the
+  *first* re-read.
+- **The section could crash on a failed first read.** The error phase carries no catalog, and reading
+  `catalog.syncing` off it threw during render — blanking the one screen that explains what went wrong, together
+  with its retry button. Those reads are guarded now, so a failed first check leaves its error and the button
+  visible.
+
+### Tests
+
+- 244 → 261 offline checks. The new ones are discriminating on purpose: the panel answers while the docs host is
+  held open (so a blocking implementation cannot pass), two mounts join one check instead of starting another,
+  an unreachable docs host is not re-probed by the next mount, a round that parsed nothing still writes its
+  attempt, the two page probes provably overlap, Ultra reads Max 20× even when the rows are swapped, a key
+  pasted inside the cache window is not served the old account, a first read that fails renders instead of
+  throwing, and an endlessly "still checking" host is asked at most ten times. `tests/host.test.mjs` also had a
+  check with an empty body (`the first read comes from upstream`) that could not fail; it asserts now.
+- Verified on Node 18.20.4 and Node 24.13.0.
+- The fixes were then merged back into the monorepo (`commandcode-usage`, `plugins/dsh`), which is the
+  directory the live DSH profile actually loads this plugin from — the standalone repository is the
+  distribution copy, and editing only that one changes nothing on screen. All 27 files on the release
+  manifest are byte-identical between the two repositories again, and the suite is green in both.
+
 ## [Unreleased] — 2026-09-30
 
 ### Added

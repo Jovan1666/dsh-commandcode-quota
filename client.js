@@ -69,6 +69,26 @@ window.__ModuleLoader__.load({
      */
     const REVALIDATE_MS = 3_000
     /**
+     * Cadence while the host says a catalog check is still running.
+     *
+     * The settings section paints from local data at once and the host does the
+     * official check behind that answer, so the page the user is looking at is
+     * real but one check behind. This is how often it comes back to see whether
+     * the check landed. It is bounded: see {@link SYNCING_MAX_TRIES}.
+     */
+    const SYNCING_MS = 2_000
+    /**
+     * How many times the settings section will come back for a running check.
+     *
+     * Each re-read also asks the host "is a check due?", so a host that keeps
+     * answering `syncing: true` — a docs site that cannot be reached, a check
+     * stuck behind its own timeout — must not turn an open settings page into a
+     * poll. Six tries is about half a minute of waiting, which is longer than a
+     * healthy check takes and short enough that a broken one stops asking; the
+     * button below stays available for anyone who wants to try again by hand.
+     */
+    const SYNCING_MAX_TRIES = 6
+    /**
      * Cadence while the host answers `configured: false` — it has no Command Code
      * provider, so the card stays invisible but still looks again, slowly.
      *
@@ -169,6 +189,7 @@ window.__ModuleLoader__.load({
         statusNever: '从未核对过官方数据。',
         statusStale: '已超过 24 小时未核对（上次核对 {time}）。',
         statusChecked: '上次核对 {time}。',
+        statusSyncing: '正在后台核对官方数据…（页面先显示本地已有的一份）',
         statusUpdated: '官方数据更新于 {time}。',
         fetchModeHash: '本机用不了官方的 HEAD 校验，改用整篇比对（仍然只在内容变了时重新解析）。',
         failureHead: '{count} 项这次没核对成功：',
@@ -235,6 +256,7 @@ window.__ModuleLoader__.load({
         statusNever: 'Never checked against the official data.',
         statusStale: 'Not checked for more than 24 hours (last check {time}).',
         statusChecked: 'Last checked {time}.',
+        statusSyncing: 'Checking the official data in the background… (showing the local copy meanwhile)',
         statusUpdated: 'Official data updated {time}.',
         fetchModeHash: 'This machine cannot use the site’s HEAD check, so the host compares whole documents (it still re-parses only when the content changed).',
         failureHead: '{count} item(s) failed this check:',
@@ -589,11 +611,16 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
                 setState({ phase: 'ready', report: value, at: Date.now() })
                 const isSnapshot = value.stale === true
                 staleStreak = isSnapshot ? staleStreak + 1 : 0
+                // A window that is burning keeps its cadence even when the report
+                // is a snapshot: the snapshot branch used to win outright, so a
+                // hot account could sit a whole minute on stale numbers after one
+                // snapshot, and the spent-window ceiling was skipped entirely.
+                const settled = anyHot(value) ? FAST_MS : SLOW_MS
                 timer = window.setTimeout(
                   load,
                   isSnapshot
-                    ? (staleStreak === 1 ? REVALIDATE_MS : SLOW_MS)
-                    : (anyHot(value) ? FAST_MS : SLOW_MS),
+                    ? (staleStreak === 1 ? REVALIDATE_MS : settled)
+                    : settled,
                 )
               },
               (error) => {
@@ -952,7 +979,10 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
      * Deliberately not the sidebar card's poll. A settings page is opened on
      * purpose and can be left open for a long time, and every catalog read costs
      * upstream requests against the same account the user is coding on: one read
-     * when the section mounts, one per explicit "check for updates".
+     * when the section mounts, one per explicit "check for updates" — plus, while
+     * the host says a check is still running (`catalog.syncing`), a local re-read
+     * every couple of seconds so the fresh numbers appear on their own instead of
+     * the user having to guess when to press the button.
      *
      * @param props - the section's injected face (`fetchQuota`, `refreshQuota`).
      * @returns the current state, whether a check is running, and the trigger.
@@ -964,40 +994,72 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
       // face on every render must not make the mount read run again.
       const transport = React.useRef(props)
       transport.current = props
+      // A user-pressed check outlives a single render, so its cancellation token
+      // lives with the component: unmounting the section must not leave the
+      // request running with nothing left to receive its answer.
+      const refreshController = React.useRef(null)
 
       React.useEffect(() => {
         const controller = new AbortController()
-        // Promise.resolve() turns a synchronous throw from the transport into a
-        // rejection, so a broken face reports itself instead of unmounting.
-        Promise.resolve()
-          .then(() => transport.current.fetchQuota(controller.signal))
-          .then(
-            (result) => {
-              if (controller.signal.aborted) return
-              setState((previous) => catalogState(result, previous.catalog))
-            },
-            (error) => {
-              if (controller.signal.aborted) return
-              setState((previous) => ({
-                phase: 'error',
-                message: String(error?.message ?? error),
-                catalog: previous.catalog,
-              }))
-            },
-          )
-        return () => { controller.abort() }
+        // Shared by the initial read and every "the host is still checking"
+        // re-read, so unmounting cancels whichever one is pending.
+        let timer
+        // How many answers in a row have said a check is still running. Bounded
+        // on purpose: every re-read asks the host whether a check is due, so an
+        // unbounded loop here would be a request loop, not a wait.
+        let syncingStreak = 0
+        const read = () => {
+          // Promise.resolve() turns a synchronous throw from the transport into
+          // a rejection, so a broken face reports itself instead of unmounting.
+          Promise.resolve()
+            .then(() => transport.current.fetchQuota(controller.signal))
+            .then(
+              (result) => {
+                if (controller.signal.aborted) return
+                setState((previous) => catalogState(result, previous.catalog))
+                // The host answered from local data while its check runs behind
+                // that answer: come back for the result rather than leave the
+                // page one check behind for as long as it stays open.
+                const catalog = result !== null && typeof result === 'object' && result.ok === true
+                  ? result.value?.catalog
+                  : undefined
+                const running = catalog !== null && typeof catalog === 'object' && catalog.syncing === true
+                syncingStreak = running ? syncingStreak + 1 : 0
+                if (running && syncingStreak <= SYNCING_MAX_TRIES) {
+                  timer = window.setTimeout(read, SYNCING_MS)
+                }
+              },
+              (error) => {
+                if (controller.signal.aborted) return
+                setState((previous) => ({
+                  phase: 'error',
+                  message: String(error?.message ?? error),
+                  catalog: previous.catalog,
+                }))
+              },
+            )
+        }
+        read()
+        return () => {
+          window.clearTimeout(timer)
+          controller.abort()
+          refreshController.current?.abort()
+        }
       }, [])
 
       const refresh = React.useCallback(() => {
+        refreshController.current = new AbortController()
         setRefreshing(true)
         Promise.resolve()
-          .then(() => transport.current.refreshQuota())
+          .then(() => transport.current.refreshQuota(refreshController.signal))
           .then(
             (result) => {
+              if (refreshController.signal.aborted) return
               setState((previous) => catalogState(result, previous.catalog))
               setRefreshing(false)
             },
             (error) => {
+              if (refreshController.signal.aborted) return
               // A failed check keeps the numbers: they are still the last thing
               // the official table said, and blanking them would destroy the only
               // information the user came for.
@@ -1031,6 +1093,12 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
      */
     function catalogStatus(catalog, t) {
       const lines = []
+      // A check is running behind this answer: say so first, because it explains
+      // why the numbers below may be one check old and why they may change by
+      // themselves in a moment.
+      if (catalog.syncing === true) {
+        lines.push({ key: 'syncing', tone: 'note', text: t('statusSyncing') })
+      }
       const checked = whenValue(catalog.checkedAt)
       if (catalog.origin === 'bundled' || catalog.verified !== true) {
         lines.push({ key: 'bundled', tone: 'warn', text: t('statusBundled') })
@@ -1183,6 +1251,10 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
       if (state.phase === 'hidden' || state.phase === 'absent') return null
 
       const catalog = state.catalog
+      // A first read can fail outright, in which case there is no catalog to read
+      // flags off — and the section still has to render its error line and the
+      // retry button, so nothing below may assume one exists.
+      const syncing = catalog?.syncing === true
       const rows = Array.isArray(catalog?.models) ? catalog.models : []
       const configured = rows.filter((model) => model?.configured === true)
       // Only the configured models are hidden, so the fold is worth offering
@@ -1276,9 +1348,12 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
           h('button', {
             type: 'button',
             className: 'ccq-btn ccq-refresh',
-            disabled: refreshing,
+            // Also held while a background check is running: the host refuses to
+            // start a second one, so an enabled button would look like it did
+            // nothing.
+            disabled: refreshing || syncing,
             onClick: refresh,
-          }, refreshing ? t('refreshing') : t('refresh')),
+          }, refreshing || syncing ? t('refreshing') : t('refresh')),
           doc === undefined ? null : h('a', {
             className: 'ccq-link',
             href: doc,

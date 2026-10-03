@@ -320,9 +320,11 @@ console.log('freshness while the account keeps burning credit')
     plugin.apply(ctx)
 
     const first = await callRoute(seen.route, 'cc-quota/report', {})
-    assert.equal(first.value.monthly.used, 67.68)
-    assert.equal(calls.length, 4)
-    check('the first read comes from upstream', () => {})
+    check('the first read comes from upstream', () => {
+      assert.equal(first.ok, true)
+      assert.equal(first.value.monthly.used, 67.68)
+      assert.equal(calls.length, 4, 'a cold cache must cost the four endpoints')
+    })
 
     state.used = 68.4
     state.requests = 17_700
@@ -686,6 +688,160 @@ console.log('the route and the snapshot are owned by the plugin')
       assert.equal(statSync(snapshotFile).mode & 0o077, 0, 'the snapshot is readable beyond its owner')
       assert.equal(statSync(dir).mode & 0o077, 0, 'the snapshot directory is reachable beyond its owner')
     }
+  })
+}
+
+console.log('the 15-second cache belongs to one account')
+{
+  const home = isolatedHome()
+  writeFileSync(
+    path.join(home, 'settings.yaml'),
+    'llm:\n  providers:\n    cc:\n      baseURL: https://api.commandcode.ai/provider/v1\n      apiKey: key-one\n',
+    'utf8',
+  )
+  stubFetch()
+  const plugin = await loadHostHalf()
+  // The route's literal apiKey is step 2 of the resolution order; the generic env
+  // names are step 3, so they must not be set for the route to be the source.
+  delete process.env.COMMANDCODE_API_KEY
+  delete process.env.COMMAND_CODE_API_KEY
+  delete process.env.CMD_API_KEY
+  const calls = []
+  const upstream = globalThis.fetch
+  globalThis.fetch = (url, options) => { calls.push(String(url)); return upstream(url, options) }
+  const { ctx, seen } = makeCtx()
+  plugin.apply(ctx)
+
+  const first = await callRoute(seen.route, 'cc-quota/report', {})
+  const afterFirst = calls.length
+  writeFileSync(
+    path.join(home, 'settings.yaml'),
+    'llm:\n  providers:\n    cc:\n      baseURL: https://api.commandcode.ai/provider/v1\n      apiKey: key-two\n',
+    'utf8',
+  )
+  const second = await callRoute(seen.route, 'cc-quota/report', {})
+
+  check('pasting a different key does not keep serving the previous account', () => {
+    assert.match(first.value.credentialSource, /provider apiKey/)
+    // Same process, same 15-second window: without the fingerprint check this
+    // second call would be answered from the cache and still describe key-one's
+    // account — the exact "quietly wrong number" a drifting account hides.
+    assert.ok(calls.length > afterFirst, 'the cache answered a call made with a different credential')
+    assert.ok(second.ok)
+  })
+  // Give the in-flight read started by the second call somewhere to land.
+  await new Promise((resolve) => { setTimeout(resolve, 20) })
+}
+
+console.log('the catalog never blocks the answer')
+{
+  isolatedHome()
+  stubFetch()
+  const plugin = await loadHostHalf()
+  const { ctx, seen } = makeCtx()
+  plugin.apply(ctx)
+
+  /**
+   * A docs fetch that never settles on its own, so "the answer did not wait for
+   * it" is a fact about the code rather than a race the test hopes to win. The
+   * promises are settled by `release()` below, at the very end of the block, so
+   * the sync this plugin started cannot still be in flight when the next block
+   * boots its own instance.
+   */
+  let releaseDocs
+  const docsGate = new Promise((resolve) => { releaseDocs = resolve })
+  const docsRespond = (url) => {
+    if (url.includes('/docs/resources/pricing-limits')) {
+      return { status: 404, etag: undefined, body: undefined }
+    }
+    return { status: 404, etag: undefined, body: undefined }
+  }
+
+  const upstreamFetch = globalThis.fetch
+  let docsRequests = 0
+  globalThis.fetch = async (url, options) => {
+    const href = String(url)
+    if (href.startsWith('https://commandcode.ai/')) {
+      docsRequests += 1
+      const answer = docsRespond(href)
+      await docsGate
+      return new Response(answer.body, { status: answer.status, headers: answer.etag === undefined ? {} : { etag: answer.etag } })
+    }
+    return upstreamFetch(url, options)
+  }
+
+  const started = Date.now()
+  const first = await callRoute(seen.route, 'cc-quota/report', { catalog: true })
+  const elapsed = Date.now() - started
+  check('a settings-panel read answers from local data while the check runs behind it', () => {
+    // The whole point: an unanswerable docs host must not hold the response. The
+    // budget is generous — this is a "did it await at all" assertion, not a
+    // timing benchmark — but a blocking implementation cannot beat it, because
+    // its promise never settles.
+    assert.ok(elapsed < 2_000, `the route waited ${elapsed} ms on a docs host that never answers`)
+    assert.equal(first.ok, true)
+    assert.equal(first.value.catalog.syncing, true, 'the panel must be told a check is still running')
+    assert.equal(first.value.catalog.verified, false, 'nothing has been verified yet, so it must not claim to be')
+    assert.equal(docsRequests, 2, 'pricing page + plan page, one probe each')
+  })
+
+  const second = await callRoute(seen.route, 'cc-quota/report', { catalog: true })
+  check('a second mount joins the running check instead of starting another', () => {
+    assert.equal(second.value.catalog.syncing, true)
+    assert.equal(docsRequests, 2, 'the in-flight sync was duplicated')
+  })
+
+  // The card's own poll is what runs every minute; it must not carry the catalog
+  // at all — it was ~97 % of a 22 KB response and the card never reads it.
+  const cardPoll = await callRoute(seen.route, 'cc-quota/report', {})
+  check('a card poll carries no catalog, and never asks a docs host anything', () => {
+    assert.equal(cardPoll.ok, true)
+    assert.equal(cardPoll.value.catalog, undefined, 'the card poll was sent a catalog it does not read')
+    assert.equal(docsRequests, 2, 'a card poll spent a docs request')
+  })
+
+  // Let the dangling check finish (it answers 404 for both pages) so this block
+  // leaves no in-flight sync behind for the next one.
+  releaseDocs()
+  await new Promise((resolve) => { setTimeout(resolve, 50) })
+}
+
+console.log('a catalog check that found nothing does not repeat itself')
+{
+  isolatedHome()
+  stubFetch()
+  const plugin = await loadHostHalf()
+  const { ctx, seen } = makeCtx()
+  plugin.apply(ctx)
+
+  const upstreamFetch = globalThis.fetch
+  let docsRequests = 0
+  globalThis.fetch = (url, options) => {
+    if (String(url).startsWith('https://commandcode.ai/')) {
+      docsRequests += 1
+      return Promise.reject(new Error('getaddrinfo ENOTFOUND commandcode.ai'))
+    }
+    return upstreamFetch(url, options)
+  }
+
+  const first = await callRoute(seen.route, 'cc-quota/report', { catalog: true })
+  await new Promise((resolve) => { setTimeout(resolve, 50) })
+  const afterFirst = docsRequests
+  const second = await callRoute(seen.route, 'cc-quota/report', { catalog: true })
+  check('an unreachable docs host is retried on a backoff, not on every mount', () => {
+    assert.equal(first.value.catalog.syncing, true, 'the first read must report that a check started')
+    assert.ok(afterFirst >= 2, `expected both pages to be probed once, saw ${afterFirst}`)
+    assert.equal(docsRequests, afterFirst, 'the very next mount re-sent the whole round')
+    assert.equal(second.value.catalog.syncing, true)
+  })
+
+  // And the failure is recorded rather than silently swallowed: the panel has to
+  // be able to say what could not be read.
+  await new Promise((resolve) => { setTimeout(resolve, 50) })
+  const third = await callRoute(seen.route, 'cc-quota/report', { catalog: true })
+  check('the failed check is reported to the panel, not swallowed', () => {
+    const codes = (third.value.catalog.failures ?? []).map((failure) => failure.code)
+    assert.deepEqual(codes, ['CATALOG_NETWORK', 'CATALOG_NETWORK'])
   })
 }
 

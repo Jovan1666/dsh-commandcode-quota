@@ -22,7 +22,27 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
-import { credentialFingerprint, configuredModelIds, fetchQuotaReport, quotaSnapshotPath } from './quota.mjs'
+import { authConfigSignature, credentialFingerprint, configuredModelIds, fetchQuotaReport, quotaSnapshotPath } from './quota.mjs'
+
+/**
+ * How long to hold off after a catalog check that changed nothing.
+ *
+ * A failed sync whose pages all failed still writes a catalog (`noData: true`),
+ * and `needsRevalidate` alone cannot tell "the TTL lapsed" from "we tried two
+ * seconds ago and every page timed out". This is the in-memory half of the
+ * backoff; the on-disk half is `CATALOG_MIN_RETRY_MS`. It is deliberately short:
+ * it exists to stop a re-entry storm from the panel's own poll, not to stop a
+ * user who pressed the button, which is why an explicit refresh ignores it.
+ */
+const CATALOG_RETRY_GATE_MS = 5_000
+
+/**
+ * How long the "which models did the user configure" answer may be reused.
+ *
+ * It is read from DSH's own settings files and only re-orders the catalog table;
+ * nothing about account identity depends on it, so a short window is enough.
+ */
+const MODELS_MEMO_MS = 3_000
 import {
   needsRevalidate,
   readCatalogCache,
@@ -231,7 +251,12 @@ function formatReportText(report) {
  * @param ctx - host plugin context carrying the `connection` service.
  */
 export function apply(ctx) {
-  /** @type {{ at: number, report: unknown } | undefined} */
+  /**
+   * The last report read in this process, with the fingerprint of the credential
+   * it was read with (see the cache-hit check in `report`).
+   *
+   * @type {{ at: number, report: unknown, fingerprint: string | undefined } | undefined}
+   */
   let cache
 
   /** Where the last good report is kept between process lifetimes. */
@@ -243,21 +268,48 @@ export function apply(ctx) {
    */
   let snapshot = readSnapshot(snapshotFile)
 
+  /** @type {{ signature: string, fingerprint: string | undefined } | undefined} */
+  let fingerprintMemo
+  /** @type {{ at: number, ids: string[] } | undefined} */
+  let modelsMemo
+
   /**
-   * Whether this machine still points at Command Code, and with which key.
+   * The credential fingerprint, memoized against the settings files themselves.
    *
-   * The snapshot exists to make the card appear instantly, not to outlive the
-   * configuration it belongs to. Somebody who just removed their Command Code
-   * provider must get the "not applicable here" answer (and so no card) rather
-   * than a reading from an account they no longer have wired up — and somebody
-   * who switched accounts must not see the previous account's numbers. The
-   * first question is a resolve-or-not check, the second is the fingerprint
-   * match against the snapshot. Both are a few small file reads plus a digest,
-   * and only run on the cold path.
+   * Resolving it reads every settings file DSH might keep a provider route in —
+   * and, when the route names an `apiKeyEnv`, the credential store too, which can
+   * be megabytes. Doing that on every poll puts unrelated file I/O in front of
+   * the card's answer for no gain. The cache is invalidated by a stat-based
+   * signature of those files rather than by a timer, so a key that was just
+   * pasted is picked up immediately while a poll that changes nothing costs a
+   * handful of `stat` calls.
    *
    * @returns the current credential fingerprint, or undefined when nothing resolves.
    */
-  const currentFingerprint = () => credentialFingerprint()
+  const currentFingerprint = () => {
+    const signature = authConfigSignature()
+    if (fingerprintMemo !== undefined && fingerprintMemo.signature === signature) return fingerprintMemo.fingerprint
+    const fingerprint = credentialFingerprint()
+    fingerprintMemo = { signature, fingerprint }
+    return fingerprint
+  }
+
+  /**
+   * The models the user configured for this route, memoized the same way.
+   *
+   * Only the catalog view uses it (to sort the user's own models first), and the
+   * catalog is only looked at when the settings panel asks for it — so this must
+   * never run on a plain card poll.
+   *
+   * @returns raw model ids as written in the settings files.
+   */
+  const currentConfiguredModels = () => {
+    const now = Date.now()
+    if (modelsMemo !== undefined && now - modelsMemo.at < MODELS_MEMO_MS) return modelsMemo.ids
+    const ids = configuredModelIds()
+    modelsMemo = { at: now, ids }
+    return ids
+  }
   /**
    * The read currently in progress, if any.
    *
@@ -284,6 +336,21 @@ export function apply(ctx) {
   let catalogInFlight
 
   /**
+   * When the next catalog attempt is allowed after one that changed nothing.
+   *
+   * A failed sync whose pages all failed writes a catalog with no data in it
+   * (`noData: true`) — and `needsRevalidate` alone cannot tell "the TTL lapsed"
+   * from "we tried two seconds ago and every page timed out". Without this gate
+   * the settings panel would, on a machine that cannot reach the docs pages,
+   * re-send a full round of requests on every poll, each waiting out the 20 s
+   * per-request deadline. This is the in-memory half of the backoff; the on-disk
+   * half is `CATALOG_MIN_RETRY_MS`.
+   *
+   * @type {number}
+   */
+  let catalogRetryAt = 0
+
+  /**
    * Ensure a catalog view is available, revalidating only when asked.
    *
    * A plain poll (the sidebar card) never spends a request on the catalog: the
@@ -292,6 +359,13 @@ export function apply(ctx) {
    * question is evaluated. `catalogRefresh: true`, the check-update button,
    * forces one whatever the TTL says.
    *
+   * **The check never blocks the answer.** The view is built from local data and
+   * returned immediately; the sync runs behind it. Measured on a cold profile,
+   * awaiting the sync in the request path cost the panel 1.6 s before its first
+   * byte (a 300 ms round-trip simulation: HEAD+GET for two pages, four hops).
+   * The one exception is `refresh: true` — a user who pressed "check for
+   * updates" asked for the check, and the answer must describe the check.
+   *
    * "Changed only" is enforced upstream: the sync probes each page with a
    * 0-byte HEAD and reuses the cache when the vendor's ETag is unchanged, so a
    * check that finds nothing new costs no body download and no re-parse.
@@ -299,34 +373,53 @@ export function apply(ctx) {
    * @param planId - the account's plan, or undefined when it is not known yet.
    * @param options.check - whether this caller wants the "is it time?" question asked.
    * @param options.refresh - force a check and wait for it.
+   * @param options.retryMs - how long to hold off after a check that changed nothing.
    * @returns the catalog view for this plan.
    */
-  const catalogFor = async (planId, { check = false, refresh = false } = {}) => {
+  const catalogFor = async (planId, { check = false, refresh = false, retryMs = CATALOG_RETRY_GATE_MS } = {}) => {
     const ttlMs = resolveCatalogTtlMs()
-    const cached = readCatalogCache()
+    // Read the cache file once and hand the parsed object to the view: the view
+    // used to re-read and re-parse it, 193 KiB of JSON on every request.
+    let cached = readCatalogCache()
+    const now = Date.now()
     const due = (check || refresh) && needsRevalidate({ catalog: cached, planId, ttlMs })
-    if ((due || refresh) && catalogInFlight === undefined) {
+    const gated = due && catalogInFlight === undefined && now < catalogRetryAt
+    if ((due || refresh) && catalogInFlight === undefined && !gated) {
       // Failures are recorded inside the catalog itself, so a rejected promise
       // here has nothing left to report.
-      catalogInFlight = syncCatalog({ planId, ttlMs })
+      catalogInFlight = syncCatalog({ planId, previous: cached })
+        .then((result) => {
+          const complete = result?.catalog?.noData !== true
+          catalogRetryAt = complete ? 0 : Date.now() + retryMs
+        })
         .catch(() => undefined)
         .finally(() => { catalogInFlight = undefined })
     }
-    if ((due || refresh) && catalogInFlight !== undefined) await catalogInFlight
+    // Only the explicit "check for updates" waits; everything else answers from
+    // local data and lets the next poll pick the fresh numbers up.
+    if (refresh && catalogInFlight !== undefined) {
+      await catalogInFlight
+      // Re-read: the sync wrote a new catalog, and the view must describe it.
+      cached = readCatalogCache()
+    }
     // Cache first, bundled seed second, an honest "nothing yet" last.
-    return resolveCatalogView({
+    const view = resolveCatalogView({
+      catalog: cached,
       planId,
-      configuredModels: configuredModelIds(),
+      configuredModels: currentConfiguredModels(),
       ttlMs,
     })
+    // Tell the browser half a check is running so it can come back in a moment
+    // instead of showing a frozen page.
+    return catalogInFlight === undefined && !gated ? view : { ...view, syncing: true }
   }
 
   /**
    * Attach the catalog view to a report result.
    *
-   * The browser half renders the plan's per-model allowances from it. A missing
-   * catalog never fails the report: the worst case is a view that says it has not
-   * synced yet.
+   * The browser half's settings section renders the plan's per-model allowances
+   * from it; the sidebar card never reads it. A missing catalog never fails the
+   * report: the worst case is a view that says it has not synced yet.
    *
    * @param result - the RPC result for the quota report.
    * @param options.check - ask whether the catalog is overdue for a check.
@@ -350,14 +443,17 @@ export function apply(ctx) {
   const fetchOnce = async () => {
     try {
       const value = await fetchQuotaReport()
-      cache = { at: Date.now(), report: value }
+      // Read the fingerprint once per fetch: it is stored with the cache entry so
+      // the cache-hit path can prove the numbers belong to the current account,
+      // and it is the same value the snapshot is keyed by.
+      const fingerprint = currentFingerprint()
+      cache = { at: Date.now(), report: value, fingerprint }
       // Keep the last good report on disk — and in memory — so the next cold
       // start (a dsh restart, a page reload after the host recycled) can paint
       // instantly instead of waiting out another upstream round trip. Refreshing
       // the in-memory copy matters too: otherwise the stale path would go on
       // serving whatever was on disk at startup, which is older than the report
       // already fetched.
-      const fingerprint = currentFingerprint()
       snapshot = fingerprint === undefined ? undefined : { fingerprint, report: value }
       if (fingerprint !== undefined) writeSnapshot(snapshotFile, value, fingerprint)
       return { ok: true, value }
@@ -405,8 +501,14 @@ export function apply(ctx) {
    */
   const report = async ({ allowStale = false } = {}) => {
     const now = Date.now()
+    // The cached report is only good for the account it was read from: a key or
+    // plan switch must not keep answering with the previous account's numbers
+    // for the life of the cache window. The fingerprint is compared here for the
+    // same reason the snapshot path compares it — and it is cheap, because
+    // `currentFingerprint` is memoized against the settings files' own mtimes.
     if (cache !== undefined && now - cache.at < CACHE_MS) {
-      return { ok: true, value: cache.report }
+      if (currentFingerprint() === cache.fingerprint) return { ok: true, value: cache.report }
+      cache = undefined
     }
 
     // Start (or join) the refresh either way: the snapshot must never become a
@@ -457,17 +559,31 @@ export function apply(ctx) {
       return failure(rpcId, 'bad-request', `method ${JSON.stringify(message.method)} does not match endpoint ${JSON.stringify(ENDPOINT)}`, { issues: [] })
     }
 
-    // The catalog is a second dataset with its own cadence. It rides along with
-    // every answer, but a check only happens when the settings panel asks for one
-    // (`catalog: true`), or when the button forces it (`catalogRefresh: true`) —
-    // the card's minute-by-minute poll never spends a request on it.
+    // The catalog is a second dataset with its own cadence. It rides along only
+    // when the caller asks for it: the settings panel does (`catalog: true`), the
+    // sidebar card does not — and attaching it anyway meant every card poll
+    // carried a ~21 KB catalog the card never reads (97 % of a 22 KB response).
     const payload = message.payload !== null && typeof message.payload === 'object' ? message.payload : undefined
-    const result = await report({ allowStale: true })
-    const catalogOptions = {
+    const wantsCatalog = payload?.catalog === true || payload?.catalogRefresh === true
+    // The two reads are independent, so they run at the same time: a cold panel
+    // used to pay the quota round trip and the catalog round trips one after the
+    // other. Rejection is impossible — `report` converts every failure into an
+    // RPC result — but the guard keeps that from being a load-bearing assumption.
+    const quotaRead = report({ allowStale: true })
+    if (!wantsCatalog) {
+      return envelope(rpcId, await quotaRead)
+    }
+    // `withCatalog` inspects the result, so it must be handed the *settled*
+    // value: handing it the promise makes its `ok !== true` guard fire and the
+    // catalog is dropped without a sound.
+    const result = await quotaRead
+    // The view answers from local data, so a sync still running after it returns
+    // only makes the answer say `syncing` — never a reason to hold the response.
+    const catalogRead = await withCatalog(result, {
       check: payload?.catalog === true,
       refresh: payload?.catalogRefresh === true,
-    }
-    return envelope(rpcId, await withCatalog(result, catalogOptions))
+    }).catch(() => result)
+    return envelope(rpcId, catalogRead)
   }
 
   ctx.effect(() => ctx.connection.fetch.register({
