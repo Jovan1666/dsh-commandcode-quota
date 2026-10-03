@@ -11,7 +11,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -442,6 +442,53 @@ function dshConfigFiles(dshHome, home) {
     }
   }
   return [...new Set(files)];
+}
+
+/**
+ * 解析鉴权配置的「指纹」：所有会影响 {@link resolveApiKey} 结果的输入。
+ * 文件只 stat 不读内容，环境变量只取候选名。
+ *
+ * 这是给调用方做记忆化用的。面板每分钟都在问「现在用的是哪个 key」，而这个问题
+ * 的答案只有在设置文件、凭据文件或候选环境变量被改过之后才可能变；每次询问都重读
+ * 一遍几 MB 的 `.credentials.yaml` 是纯浪费，而按时间猜（「3 秒内算没变」）又会在
+ * 换 key 之后留下一段答错的时间。把「文件的 mtime/size + 候选环境变量的值」一起
+ * 签名，没变就是几次 stat，变了立刻重算 —— 两个方向都不猜。
+ *
+ * @param {object} [options] 与 {@link resolveApiKey} 相同的 home/env 锚点。
+ * @returns {string} 可直接做等值比较的签名。
+ */
+export function authConfigSignature(options = {}) {
+  const env = options.env ?? process.env;
+  const home = options.home ?? os.homedir();
+  const dshHome = options.dshHome ?? env.DSH_HOME ?? path.join(home, '.dsh');
+  const parts = [];
+  for (const file of [
+    ...dshConfigFiles(dshHome, home),
+    path.join(dshHome, '.credentials.yaml'),
+    path.join(home, '.dsh', '.credentials.yaml'),
+    path.join(home, '.commandcode', 'auth.json'),
+  ]) {
+    try {
+      const stat = statSync(file);
+      parts.push(`${file}:${stat.mtimeMs}:${stat.size}`);
+    } catch {
+      // 不存在就是「这个来源为空」，签名里记一个稳定值 —— 文件之后被创建时签名会变。
+      parts.push(`${file}:-`);
+    }
+  }
+  // 环境变量不是文件：`export` 一个新 key 不会动任何 mtime，所以候选名要单独入
+  // 签名，否则「换了 key 却被内存缓存继续当成旧账号」这个洞还在。
+  const names = [...new Set([
+    ...(options.keyNames ?? KEY_ENV_NAMES),
+    ...Object.keys(env).filter((name) => KEY_ENV_PATTERN.test(name)),
+  ])]
+    .filter((name) => !KEY_ENV_EXCLUDED.has(name))
+    .sort();
+  for (const name of names) {
+    const value = env[name];
+    parts.push(`${name}=${typeof value === 'string' ? value : ''}`);
+  }
+  return parts.join('|');
 }
 
 /**

@@ -885,16 +885,31 @@ export function derivedShape(provider) {
  * 成功核对过 → 等满 TTL；上一轮有失败 → 至少隔 {@link CATALOG_MIN_RETRY_MS} 再试，
  * 既不因为一次断网就把一整天的机会浪费掉，也不会变成轮询。
  *
- * @param {object} args `{ catalog, now, ttlMs, minRetryMs }`。
+ * 「本地没有这一档」仍然立刻补一次（换了套餐就该马上看到新表），但官方**根本没有
+ * 页面**的档位（`individual-provider` / `teams-pro`）由目录的 `unpublished` 记住，
+ * 只按 TTL 复核 —— 否则那一档永远不会出现在 `plans` 里，设置面板每次挂载都会白发
+ * 一轮请求，而且永远如此。调用方还另有一层 5 秒的重试闸门兜住「一个包都没换成」
+ * 的情况（那时连缓存都没有，`checkedAt` 无从谈起）。
+ *
+ * @param {object} args `{ catalog, planId, now, ttlMs, minRetryMs }`。
  * @returns {boolean}
  */
 export function needsRevalidate({ catalog, planId, now = Date.now(), ttlMs = CATALOG_TTL_MS, minRetryMs = CATALOG_MIN_RETRY_MS }) {
   if (catalog === undefined) return true;
-  // 换了套餐（或第一次拿到 planId）而本地没有这一档：立刻补一次，别等满 TTL。
-  if (planId !== undefined && catalog.plans?.[planId] === undefined) return true;
   const checked = Date.parse(catalog.checkedAt ?? '');
   if (!Number.isFinite(checked)) return true;
-  const failing = Array.isArray(catalog.failures) && catalog.failures.length > 0;
+  const failing = (Array.isArray(catalog.failures) && catalog.failures.length > 0)
+    // 上一次核对一个包都没换成：内容没有落盘，`failures` 就无处可记（见 syncCatalog
+    // 的 noData 分支），这时也必须走最短间隔，否则没有缓存的机器每次挂载都会重发
+    // 一整轮请求（断网时每轮最长 4×20s 的超时叠加）。
+    || catalog.noData === true;
+  // 这一档官方根本没有页面（Provider / Teams Pro）：再问一万次也不会有。它算
+  // 「问过了、没有」，所以只按 TTL 复核，而不是每次调用都重试。
+  const unpublished = Array.isArray(catalog.unpublished) && catalog.unpublished.includes(planId);
+  if (!unpublished && planId !== undefined && catalog.plans?.[planId] === undefined) {
+    // 换了套餐（或第一次拿到 planId）而本地没有这一档：立刻补一次，别等满 TTL。
+    return true;
+  }
   return now - checked >= (failing ? minRetryMs : ttlMs);
 }
 
@@ -935,7 +950,8 @@ export async function syncCatalog(config = {}) {
   }
 
   const failures = [];
-  const validators = { ...(previous?.validators ?? {}) };
+  const previousValidators = { ...(previous?.validators ?? {}) };
+  const validators = { ...previousValidators };
   const plans = { ...(previous?.plans ?? {}) };
   let pricing = previous?.pricing;
   let planLevel = previous?.planLevel;
@@ -945,41 +961,64 @@ export async function syncCatalog(config = {}) {
 
   // 定价页先处理：套餐页要用它的可用性数据。
   const order = [PRICING_DOC_URL, ...[...wanted.keys()].filter((url) => url !== PRICING_DOC_URL)];
-  for (const url of order) {
-    const stored = validators[url];
-    let fresh;
+
+  /**
+   * 0 字节的 ETag 探针。
+   *
+   * HEAD 被网关拒绝（405/501）或没给 ETag 时**不能让整个目录卡死** —— 退化为
+   * 「GET 后比整篇摘要」，多一次正文下载，但判定「没变」的效果一样。
+   *
+   * @param url 目标页。
+   * @returns `{ etag, usable }`；`usable` 为 false 表示这次探针无效，必须走 GET。
+   */
+  const probe = async (url) => {
     try {
-      // 第一跳：HEAD 只取 ETag，0 字节。HEAD 被网关拒绝（405/501）或没给 ETag 时
-      // **不能让整个目录卡死** —— 退化为「GET 后比整篇摘要」，多一次正文下载，
-      // 但判定「没变」的效果一样。
-      let headEtag;
-      let headUsable = false;
-      try {
-        const head = await fetchCatalogDoc(url, { method: 'HEAD', fetchImpl, timeoutMs });
-        if (head.status === 200 && head.etag !== undefined) {
-          headUsable = true;
-          headEtag = head.etag;
-        }
-      } catch {
-        // HEAD 本身失败：走 GET 兜底，不记为一次失败。
-      }
-      if (headUsable && stored?.etag !== undefined && stored.etag === headEtag) {
-        // 0 字节就确认「没变」：不下载、不重解析、不改 updatedAt。
-        continue;
-      }
-      if (!headUsable) usedHashMode = true;
-      const get = await fetchCatalogDoc(url, { method: 'GET', fetchImpl, timeoutMs });
-      if (get.status !== 200) {
-        const error = new Error(`HTTP ${get.status}`);
-        error.status = get.status;
-        error.finalUrl = get.finalUrl;
-        throw error;
-      }
-      if (stored?.digest !== undefined && get.digest === stored.digest) {
-        validators[url] = { etag: get.etag ?? stored.etag, digest: get.digest };
-        continue;
-      }
-      fresh = { text: get.text, etag: get.etag, digest: get.digest };
+      const head = await fetchCatalogDoc(url, { method: 'HEAD', fetchImpl, timeoutMs });
+      if (head.status === 200 && head.etag !== undefined) return { etag: head.etag, usable: true };
+    } catch {
+      // HEAD 本身失败：走 GET 兜底，不记为一次失败。
+    }
+    return { etag: undefined, usable: false };
+  };
+
+  /**
+   * 抓一页正文并判断内容是否真的变了。
+   *
+   * @param url 目标页。
+   * @param stored 上次记下的校验器。
+   * @returns `{ text, etag, digest }`（内容变了）或 undefined（没变，调用方跳过重解析）。
+   * @throws {Error} 传输失败、超时或非 200。
+   */
+  const fetchChanged = async (url, stored) => {
+    const get = await fetchCatalogDoc(url, { method: 'GET', fetchImpl, timeoutMs });
+    if (get.status !== 200) {
+      const error = new Error(`HTTP ${get.status}`);
+      error.status = get.status;
+      error.finalUrl = get.finalUrl;
+      throw error;
+    }
+    if (stored?.digest !== undefined && get.digest === stored.digest) {
+      // ETag 动了但字节没动（官方每次部署都会换 ETag）：不重解析、不改 updatedAt。
+      validators[url] = { etag: get.etag ?? stored.etag, digest: get.digest };
+      return undefined;
+    }
+    return { text: get.text, etag: get.etag, digest: get.digest };
+  };
+
+  /**
+   * 走完「探针 → 抓取 → 判定没变」三跳。失败一律记账并返回 undefined。
+   *
+   * 这里只负责**一页自己**的顺序。整批 HEAD 已经在上面并发发完了，所以每一页
+   * 只需为「正文」再等一次往返，而不是每页各等两次。
+   *
+   * @param url 目标页。
+   * @param usable 这次 HEAD 探针是否有效（无效就必须走 GET 兜底）。
+   * @returns `{ url, fresh }`；`fresh` 为 undefined 表示没变或失败。
+   */
+  const fetchIfChanged = async (url, usable) => {
+    const stored = validators[url];
+    try {
+      return { url, fresh: await fetchChanged(url, stored) };
     } catch (error) {
       failures.push({
         code: error?.status === 404 ? 'CATALOG_HTTP_404' : 'CATALOG_NETWORK',
@@ -989,22 +1028,46 @@ export async function syncCatalog(config = {}) {
         message: `${url}: ${error instanceof Error ? error.message : String(error)}`,
         at,
       });
-      continue;
+      return { url, fresh: undefined };
     }
+  };
 
-    if (url === PRICING_DOC_URL) {
-      const parsed = parsePricingCatalog(fresh.text);
-      if ('error' in parsed) {
-        failures.push({ ...parsed.error, url, at });
-        continue;
-      }
+  // 第一拍：所有页的 0 字节 ETag 探针**并发**发出 —— 这是整条路径上最便宜也最
+  // 不该串行的一跳。串行两页 = 两次往返；并发只有一次。
+  const headByUrl = new Map(await Promise.all(order.map(async (url) => [url, await probe(url)])));
+  // 第二拍：正文也只有「真的变了」的那些页才抓，同样并发。
+  // 探针在，但 ETag 没动 → 一个字节都不下载。
+  const fetchTargets = order.filter((url) => {
+    const usable = headByUrl.get(url).usable;
+    if (!usable) usedHashMode = true;
+    return !(usable && validators[url]?.etag !== undefined && validators[url].etag === headByUrl.get(url).etag);
+  });
+  const fetched = new Map(await Promise.all(fetchTargets.map(async (url) => [url, await fetchIfChanged(url, headByUrl.get(url).usable)])));
+
+  // 定价页要等它的正文（套餐页的解析依赖它的可用性数据）；套餐页的正文已经同时抓了。
+  const pricingFetched = fetched.get(PRICING_DOC_URL);
+  const planFetched = order
+    .filter((url) => url !== PRICING_DOC_URL)
+    .map((url) => fetched.get(url))
+    .filter((entry) => entry !== undefined);
+
+  if (pricingFetched?.fresh !== undefined) {
+    const parsed = parsePricingCatalog(pricingFetched.fresh.text);
+    if ('error' in parsed) {
+      failures.push({ ...parsed.error, url: PRICING_DOC_URL, at });
+      // 正文抓到了、解析失败：**不能**留下这个 ETag（见下面套餐页的注释）。
+      validators[PRICING_DOC_URL] = previousValidators[PRICING_DOC_URL];
+    } else {
       pricing = { models: parsed.models, fetchedAt: at };
       planLevel = { rows: parsed.planLevel, fetchedAt: at, sourceUrl: PRICING_DOC_URL };
-      validators[url] = { etag: fresh.etag, digest: fresh.digest };
+      validators[PRICING_DOC_URL] = { etag: pricingFetched.fresh.etag, digest: pricingFetched.fresh.digest };
       changed = true;
-      continue;
     }
+  }
 
+  for (const entry of planFetched) {
+    const { url, fresh } = entry;
+    if (fresh === undefined) continue;
     let parsedAny = false;
     for (const planId of wanted.get(url) ?? []) {
       const parsed = parsePlanCatalog(planId, fresh.text, { now, availability: pricing?.models });
@@ -1021,7 +1084,7 @@ export async function syncCatalog(config = {}) {
     // 反例（曾经就是这样）：正文抓到了、解析失败，却仍存下 ETag —— 下一次核对
     // 看到 ETag 没变就跳过，于是「官方改版」这件事只报一次，然后永久静默，那一档
     // 永远没有数据。失败必须每次都报，直到真的解析成功为止。
-    if (parsedAny) validators[url] = { etag: fresh.etag, digest: fresh.digest };
+    validators[url] = parsedAny ? { etag: fresh.etag, digest: fresh.digest } : previousValidators[url];
   }
 
   const hasData = Object.keys(plans).length > 0 || pricing !== undefined;
@@ -1034,24 +1097,34 @@ export async function syncCatalog(config = {}) {
     checkedAt: at,
     // 'etag' = 这次核对靠 0 字节 HEAD 完成；'hash' = HEAD 不可用，改用整篇摘要比对。
     fetchMode: usedHashMode ? 'hash' : 'etag',
+    // 一个包都没换成时**照样落盘**：这份文件存在的意义就是记住「刚才试过了、
+    // 结果是这些失败」，让 needsRevalidate 的最短间隔生效。不落盘的话，没有缓存的
+    // 机器每次挂载都要重发一整轮请求（断网时每轮最长 4×20s 的超时叠加）。
+    noData: !hasData,
+    // 官方没有页面的档位：记住它是「问过了、没有」，不是「还没问」。
+    unpublished: [...new Set([
+      ...(previous?.unpublished ?? []),
+      ...[config.planId, ...(config.extraPlanIds ?? [])].filter((planId) => PLAN_DOC_URLS[planId] === undefined),
+    ])],
     plans,
     pricing,
     planLevel,
     validators,
     failures,
   };
-  if (hasData && config.write !== false) writeCatalogAtomic(catalog, { file });
+  if (config.write !== false) writeCatalogAtomic(catalog, { file });
   return { catalog, changed, failures };
 }
 
 /**
  * 一次拿齐「界面现在该显示什么」：缓存 → 内置基线 → 空视图。
  *
- * @param {object} [options] `{ planId, configuredModels, env, home, dshHome, file, now, ttlMs }`。
+ * @param {object} [options] `{ planId, configuredModels, env, home, dshHome, file, now, ttlMs, catalog }`。
+ *   `catalog` 已经读过就直接用（一次请求里读两遍同一个文件是白花钱）。
  * @returns {object} {@link catalogView} 的产物。
  */
 export function resolveCatalogView(options = {}) {
-  const cached = readCatalogCache(options);
+  const cached = options.catalog ?? readCatalogCache(options);
   const catalog = cached ?? readCatalogSeed(options);
   return catalogView({
     catalog,
@@ -1067,7 +1140,8 @@ export function resolveCatalogView(options = {}) {
  * 把一份已解析的目录投影成界面/命令要看的视图。
  *
  * 纯本地、不发请求：调用方决定何时核对，这里只回答「现在知道什么」。
- * 缺失一律留空并说明，绝不用 0 或猜测填坑。
+ * 缺失一律留空并说明，绝不用 0 或猜测填坑。视图里的 `syncing` 由调用方在回答
+ * 「后台已经开始核对」时置真（见 index.js 的 catalogFor）。
  *
  * @param {object} args
  * @param {object|undefined} args.catalog 缓存或 seed。
@@ -1101,6 +1175,9 @@ export function catalogView({ catalog, bundled, planId, configuredModels = [], n
     models: [],
     coverage: { published: 0, available: 0 },
     failures: catalog?.failures ?? [],
+    // 调用方（host 半）在回答「后台已经在核对官方了」时把它置真：界面据此说明
+    // 「正在核对」并在几秒后自己回来看一眼，而不是让用户盯着一个静止的页面。
+    syncing: false,
     warnings: [],
   };
   if (catalog === undefined) return empty;
@@ -1111,6 +1188,10 @@ export function catalogView({ catalog, bundled, planId, configuredModels = [], n
   const warnings = [];
   if (entry === undefined && planId !== undefined) {
     warnings.push(catalog.plans?.[planId] === undefined ? `catalog-plan-not-listed:${planId}` : 'catalog-plan-missing');
+  }
+  // 官方没有页面的档位：说清楚是「官方没发布」，而不是「我们还没取到」。
+  if (planId !== undefined && Array.isArray(catalog.unpublished) && catalog.unpublished.includes(planId)) {
+    warnings.push(`catalog-plan-unpublished:${planId}`);
   }
   if (bundled === true) warnings.push('catalog-bundled-baseline');
 
@@ -1137,16 +1218,26 @@ export function catalogView({ catalog, bundled, planId, configuredModels = [], n
   models.sort((a, b) => {
     if (a.configured !== b.configured) return a.configured ? -1 : 1;
     if (a.estimated !== b.estimated) return a.estimated ? -1 : 1;
-    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+    const left = String(a.name ?? a.key ?? '');
+    const right = String(b.name ?? b.key ?? '');
+    return left < right ? -1 : left > right ? 1 : 0;
   });
 
-  const planLevelRow = entry === undefined
+  // 套餐级概览表（定价页）里的行标签是**套餐级**口径，与 per-model 表不是一套算法。
+  // 按 planId 查权威标签：绝不按展示名做前缀匹配 —— `Max 10×` 是 `Max 20×` 的前缀，
+  // 一旦定价页把两行的顺序对调，Ultra 用户就会拿到 Max 10× 的额度行（少一半）。
+  // 官方没有 per-model 页的档位（Provider / Teams Pro）也要靠这张表才有标题行，
+  // 所以没有 entry 时同样要取。
+  const levelLabel = planId === undefined ? undefined : PLAN_LEVEL_LABELS[planId];
+  const planLevelRow = levelLabel === undefined
     ? undefined
-    : (catalog.planLevel?.rows ?? []).find((row) => row.label === entry.planName || row.label.startsWith(entry.planName));
+    : (catalog.planLevel?.rows ?? []).find((row) => row.label === levelLabel);
 
   return {
     ...empty,
-    planName: entry?.planName,
+    // 官方没有 per-model 页的档位（Provider / Teams Pro）仍然有一个值得显示的
+    // 名字：套餐级概览表里那一行的标签。
+    planName: entry?.planName ?? planLevelRow?.label,
     docUrl: entry?.docUrl ?? null,
     inferredFrom: entry?.inferredFrom,
     basis: entry?.basis ?? null,
@@ -1163,7 +1254,8 @@ export function catalogView({ catalog, bundled, planId, configuredModels = [], n
       published: entry?.publishedModels ?? 0,
       derived: (entry?.models ?? []).filter((model) => model.source === 'derived').length,
       available: entry?.availableModels ?? 0,
-    },    stale: !(Number.isFinite(age) && age < ttlMs),
+    },
+    stale: !(Number.isFinite(age) && age < ttlMs),
     warnings,
   };
 }

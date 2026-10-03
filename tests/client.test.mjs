@@ -670,4 +670,217 @@ console.log('the headline stays readable, and the meter only appears with a numb
   })
 }
 
+/**
+ * Register against a fake client context and keep every slot registration.
+ *
+ * `applyAgainst` keeps only the last one (the sidebar card) on purpose; the
+ * settings section needs its own registration, so this variant records all of
+ * them, drives the host answer through a caller-supplied function, and lets the
+ * caller observe (and fire) the scheduled timers.
+ *
+ * @param options.answer - `() => value` for the host's `server-response` result.
+ * @param options.onSetTimeout - called with `(fn, delay)` for every scheduled poll.
+ */
+function applyCollectingSlots({ answer = () => GOAT, onSetTimeout } = {}) {
+  const { exports, styles, timers } = loadBundle(Object.assign({}, React, {
+    useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
+    useRef: (initial) => ({ current: initial }),
+    useEffect: (fn) => { fn() },
+    useCallback: (fn) => fn,
+  }))
+  const registrations = []
+  const rpcCalls = []
+  const ctx = {
+    effect: (callback) => callback(),
+    locale: {
+      register: () => () => {},
+      bind: () => (key) => key,
+    },
+    slots: {
+      inject: (_key, callback) => { callback() },
+      register: (options, component) => {
+        registrations.push({ options, component })
+        return () => {}
+      },
+    },
+    connection: {
+      rpc: {
+        call: (...args) => {
+          rpcCalls.push(args)
+          return Promise.resolve({ ok: true, value: answer() })
+        },
+      },
+    },
+  }
+  exports.apply(ctx)
+  if (onSetTimeout !== undefined) {
+    globalThis.window.setTimeout = (fn, delay) => {
+      timers.push(delay)
+      onSetTimeout(fn, delay)
+      return timers.length
+    }
+  }
+  const section = registrations.find((entry) => entry.options.name === 'settings.section')
+  assert.ok(section !== undefined, 'the settings section was not registered')
+  return { section, styles, timers, rpcCalls }
+}
+
+console.log('the settings section follows a background check')
+{
+  const view = (syncing) => ({
+    kind: 'commandcode-catalog',
+    syncing,
+    verified: !syncing,
+    origin: syncing ? 'bundled' : 'network',
+    planId: 'individual-goat',
+    planName: 'GOAT',
+    models: [],
+    failures: [],
+    warnings: [],
+  })
+
+  /**
+   * Mount the settings section with hooks that actually work.
+   *
+   * The shared `stubbedReact` hands back a setter that goes nowhere, which is
+   * fine for a one-shot render but blind to anything a promise does afterwards —
+   * and "the first read failed" is exactly that. State here is keyed by the
+   * rendered component *and* the hook's position in it, because one render also
+   * mounts the sidebar card and a flat slot list would be read back in the wrong
+   * order by whichever component renders next.
+   */
+  function mountSection({ answer, onSetTimeout }) {
+    const states = new Map()
+    let current = ''
+    let hook = 0
+    const react = Object.assign({}, React, {
+      createElement: (type, props, ...children) => {
+        const key = typeof type === 'function' ? (type.name || 'anonymous') : String(type)
+        current = key
+        hook = 0
+        return React.createElement(type, props, ...children)
+      },
+      useState: (initial) => {
+        const key = `${current}#${hook}`
+        hook += 1
+        if (!states.has(key)) states.set(key, typeof initial === 'function' ? initial() : initial)
+        return [states.get(key), (next) => {
+          states.set(key, typeof next === 'function' ? next(states.get(key)) : next)
+        }]
+      },
+      useRef: (initial) => ({ current: initial }),
+      useEffect: (fn) => { fn() },
+      useCallback: (fn) => fn,
+    })
+    const { exports, timers } = loadBundle(react)
+    const registrations = []
+    const rpcCalls = []
+    exports.apply({
+      effect: (callback) => callback(),
+      locale: { register: () => () => {}, bind: () => (key) => key },
+      slots: {
+        inject: (_key, callback) => { callback() },
+        register: (options, component) => { registrations.push({ options, component }); return () => {} },
+      },
+      connection: {
+        rpc: {
+          call: (...args) => {
+            rpcCalls.push(args)
+            // Resolved on a later turn, like the real transport, so the caller
+            // can observe the state the component is in while it waits.
+            return Promise.resolve().then(() => ({ ok: true, value: answer() }))
+          },
+        },
+      },
+    })
+    const section = registrations.find((entry) => entry.options.name === 'settings.section')
+    assert.ok(section !== undefined, 'the settings section was not registered')
+    if (onSetTimeout !== undefined) {
+      globalThis.window.setTimeout = (fn, delay) => {
+        timers.push(delay)
+        onSetTimeout(fn, delay)
+        return timers.length
+      }
+    }
+    const render = () => {
+      // renderToStaticMarkup invokes the root component directly, so the hook key
+      // has to be set here rather than by createElement.
+      current = section.component.name || 'QuotaSettingsSection'
+      hook = 0
+      return renderToStaticMarkup(React.createElement(section.component, section.options.inject()))
+    }
+    return { render, rpcCalls, timers }
+  }
+
+  await checkAsync('a catalog the host is still checking schedules one re-read, not a poll', async () => {
+    const delays = []
+    const pending = []
+    let syncing = true
+    const { section, rpcCalls } = applyCollectingSlots({
+      answer: () => ({ catalog: view(syncing) }),
+      onSetTimeout: (fn, delay) => { delays.push(delay); pending.push(fn) },
+    })
+    // The effect body is what reads the host; the stub `useEffect` runs it inline,
+    // and calling the component is what runs the effect in the first place.
+    section.component(section.options.inject())
+    await new Promise((resolve) => { setTimeout(resolve, 5) })
+    assert.equal(rpcCalls.length, 1, 'the section should read the host once on mount')
+    assert.deepEqual(rpcCalls[0][2], { catalog: true }, 'the mount read must ask for a catalog check')
+    assert.deepEqual(delays, [2_000], `a running check must schedule one 2 s re-read, got ${JSON.stringify(delays)}`)
+
+    // The re-read reports the check landed: nothing further may be scheduled.
+    syncing = false
+    const next = pending.shift()
+    assert.equal(typeof next, 'function', 'no re-read was scheduled')
+    next()
+    await new Promise((resolve) => { setTimeout(resolve, 5) })
+    assert.equal(rpcCalls.length, 2, 'the re-read must reach the host')
+    assert.deepEqual(delays, [2_000], 'the section kept polling after the check landed')
+  })
+
+  await checkAsync('a check that never finishes stops being asked about instead of looping', async () => {
+    // Each re-read carries `catalog: true`, which is also "is a check due?" on the
+    // host — so an unbounded loop here would be a request loop, not a wait. The
+    // host can legitimately answer `syncing: true` forever: an unreachable docs
+    // site, or a check sitting behind its own per-request timeout.
+    const delays = []
+    const pending = []
+    const { section, rpcCalls } = applyCollectingSlots({
+      answer: () => ({ catalog: view(true) }),
+      onSetTimeout: (fn, delay) => { delays.push(delay); pending.push(fn) },
+    })
+    section.component(section.options.inject())
+    await new Promise((resolve) => { setTimeout(resolve, 5) })
+    let fired = 0
+    while (pending.length > 0 && fired < 200) {
+      pending.shift()()
+      // eslint-disable-next-line no-await-in-loop -- the loop is the timeline
+      await new Promise((resolve) => { setTimeout(resolve, 5) })
+      fired += 1
+    }
+    assert.ok(rpcCalls.length > 1, 'the section never came back for the running check at all')
+    assert.ok(rpcCalls.length <= 10, `the section asked ${rpcCalls.length} times: that is a poll, not a wait`)
+    assert.deepEqual([...new Set(delays)], [2_000], `the cadence must not drift: ${JSON.stringify(delays)}`)
+  })
+
+  await checkAsync('a first read that fails renders its error instead of throwing', async () => {
+    // The error phase carries no catalog at all — there was nothing to carry —
+    // and the section must still draw what it can. Reading a flag off `catalog`
+    // here used to throw during that render, blanking the one screen that
+    // explains what went wrong.
+    const { render } = mountSection({
+      answer: () => { throw new Error('host exploded') },
+      onSetTimeout: () => {},
+    })
+    const loading = render()
+    assert.match(loading, /ccq-sec-title/, 'the section did not render at all')
+    // The answer resolves on a later turn; re-rendering then is what a browser
+    // does when the state the setter wrote changes.
+    await new Promise((resolve) => { setTimeout(resolve, 5) })
+    const failed = render()
+    assert.doesNotMatch(failed, /正在读取官方次数表/, 'a failed read must not sit on the loading line')
+    assert.match(failed, /ccq-refresh/, 'the retry button must be reachable')
+  })
+}
+
 console.log(`\n${passed} checks passed`)
