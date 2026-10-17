@@ -25,7 +25,15 @@ const SECRETS = [
 const PERSONAL = [
   [/C:\\+Users\\+[A-Za-z0-9._-]+/g, 'Windows home path'],
   [/\/Users\/[A-Za-z0-9._-]+/g, 'macOS home path'],
-  [/example@example.com/g, 'personal email'],
+  // Any address that is not a documented placeholder — the same shape
+  // `scripts/check.mjs` screens for, and for the same reason.
+  //
+  // This check exists to keep a personal address out of published files, so
+  // hard-coding one here would be the very leak it is meant to catch, while the
+  // placeholder that replaced it (`example@example.com`) can never appear in a
+  // file and therefore checked nothing at all. A pattern that matches any real
+  // address is the only version of this rule that works.
+  [/[A-Za-z0-9._%+-]+@(?!example\.com|example\.org|users\.noreply)[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, 'personal email'],
 ]
 
 const found = []
