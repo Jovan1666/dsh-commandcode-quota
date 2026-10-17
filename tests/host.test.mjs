@@ -10,7 +10,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync, existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -842,6 +842,60 @@ console.log('a catalog check that found nothing does not repeat itself')
   check('the failed check is reported to the panel, not swallowed', () => {
     const codes = (third.value.catalog.failures ?? []).map((failure) => failure.code)
     assert.deepEqual(codes, ['CATALOG_NETWORK', 'CATALOG_NETWORK'])
+  })
+}
+
+console.log('the sidebar card is the user’s choice, and the host remembers it')
+{
+  const home = isolatedHome()
+  stubFetch()
+  const plugin = await loadHostHalf()
+  const { ctx, seen } = makeCtx()
+  plugin.apply(ctx)
+
+  const prefFile = path.join(home, 'dsh-commandcode-quota', 'settings.json')
+  const first = await callRoute(seen.route, 'cc-quota/report', {})
+  check('a host nobody has told otherwise shows the card', () => {
+    assert.equal(first.value.cardVisible, true)
+    assert.equal(existsSync(prefFile), false, 'nothing to write until the user says something')
+  })
+
+  const off = await callRoute(seen.route, 'cc-quota/report', { cardVisible: false })
+  check('the switch writes the preference and the same answer reports it', () => {
+    assert.equal(off.value.cardVisible, false)
+    assert.deepEqual(JSON.parse(readFileSync(prefFile, 'utf8')), { version: 1, cardVisible: false })
+  })
+
+  const polled = await callRoute(seen.route, 'cc-quota/report', {})
+  check('every later poll carries the stored preference, not just the switch’s own answer', () => {
+    assert.equal(polled.value.cardVisible, false)
+  })
+
+  const catalogAnswer = await callRoute(seen.route, 'cc-quota/report', { catalog: true })
+  check('the catalog answer carries it too, so the settings panel and the card agree', () => {
+    assert.equal(catalogAnswer.value.cardVisible, false)
+    assert.equal(typeof catalogAnswer.value.catalog, 'object')
+  })
+
+  const backOn = await callRoute(seen.route, 'cc-quota/report', { cardVisible: true })
+  check('turning it back on is stored the same way', () => {
+    assert.equal(backOn.value.cardVisible, true)
+    assert.deepEqual(JSON.parse(readFileSync(prefFile, 'utf8')), { version: 1, cardVisible: true })
+  })
+
+  writeFileSync(prefFile, '{ this is not json', 'utf8')
+  const afterCorruption = await callRoute(seen.route, 'cc-quota/report', {})
+  check('a corrupt preference file shows the card rather than breaking the panel', () => {
+    // The file is the only place the choice lives, so it must never be able to
+    // take the card away by accident: garbage means "no preference stated".
+    assert.equal(afterCorruption.ok, true)
+    assert.equal(afterCorruption.value.cardVisible, true)
+  })
+
+  writeFileSync(prefFile, JSON.stringify({ version: 1, cardVisible: 'no' }), 'utf8')
+  const afterJunkValue = await callRoute(seen.route, 'cc-quota/report', {})
+  check('only an explicit false hides the card', () => {
+    assert.equal(afterJunkValue.value.cardVisible, true)
   })
 }
 

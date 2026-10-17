@@ -90,7 +90,12 @@ const PROVIDER = {
  * @param reactImpl module handed to the bundle's `require('react')`.
  * @returns module exports plus the injected-stylesheet sink.
  */
-function loadBundle(reactImpl) {
+/**
+ * @param reactImpl - module handed to the bundle's `require('react')`.
+ * @param options.storage - a `localStorage` stand-in the bundle will see.
+ * @returns module exports plus the injected-stylesheet sink.
+ */
+function loadBundle(reactImpl, { storage } = {}) {
   const styles = []
   globalThis.document = {
     getElementById: () => null,
@@ -106,6 +111,9 @@ function loadBundle(reactImpl) {
     setTimeout: (_fn, delay) => { timers.push(delay); return timers.length },
     clearTimeout: () => {},
   }
+  // Installed before the factory runs: the bundle reads the stored preference as
+  // it evaluates, so a test that cares about it cannot wait until afterwards.
+  if (storage !== undefined) fakeWindow.localStorage = storage
   // The shipped browser artifact is evaluated as a script, against the same two
   // globals the web boot supplies and none of this module's own scope.
   globalThis.window = fakeWindow
@@ -880,6 +888,244 @@ console.log('the settings section follows a background check')
     const failed = render()
     assert.doesNotMatch(failed, /正在读取官方次数表/, 'a failed read must not sit on the loading line')
     assert.match(failed, /ccq-refresh/, 'the retry button must be reachable')
+  })
+}
+
+/**
+ * Mount the whole bundle and render either of its two components on demand.
+ *
+ * The switch and the card are separate components the shell mounts on its own;
+ * the only way to test that flipping one changes the other is to render both
+ * from the same module instance. State is keyed by component and hook position,
+ * and the fake host answers through one function so a test can model the write
+ * side effect itself, the way the real host does.
+ *
+ * @param options.answer - `(payload) => RPC result` for every transport call.
+ * @param options.storage - a `localStorage` stand-in, installed on the fake window.
+ */
+function mountBoth({ answer, storage }) {
+  const states = new Map()
+  let current = ''
+  let hook = 0
+  const react = Object.assign({}, React, {
+    createElement: (type, props, ...children) => {
+      current = typeof type === 'function' ? (type.name || 'anonymous') : String(type)
+      hook = 0
+      return React.createElement(type, props, ...children)
+    },
+    useState: (initial) => {
+      const key = `${current}#${hook}`
+      hook += 1
+      if (!states.has(key)) states.set(key, typeof initial === 'function' ? initial() : initial)
+      return [states.get(key), (next) => {
+        states.set(key, typeof next === 'function' ? next(states.get(key)) : next)
+      }]
+    },
+    useRef: (initial) => ({ current: initial }),
+    useEffect: (fn) => { fn() },
+    useCallback: (fn) => fn,
+  })
+  const { exports, timers } = loadBundle(react, { storage })
+  const registrations = []
+  const calls = []
+  const dictionaries = {}
+  exports.apply({
+    effect: (callback) => callback(),
+    locale: {
+      register: (namespace, dictionary) => { dictionaries[namespace] = dictionary; return () => {} },
+      bind: () => (key) => key,
+    },
+    slots: {
+      inject: (_key, callback) => { callback() },
+      register: (options, component) => { registrations.push({ options, component }); return () => {} },
+    },
+    connection: {
+      rpc: {
+        call: (channel, method, payload, signal) => {
+          calls.push({ channel, method, payload, signal })
+          return Promise.resolve().then(() => answer(payload ?? {}))
+        },
+      },
+    },
+  })
+  const section = registrations.find((entry) => entry.options.name === 'settings.section')
+  const card = registrations.find((entry) => entry.options.name === 'sidebar.footer.action')
+  assert.ok(section !== undefined && card !== undefined, 'both slots must be registered')
+  /** Render one component the way the shell does, against its injected face. */
+  const render = (entry, props = {}) => {
+    current = entry.component.name || 'anonymous'
+    hook = 0
+    return entry.component({ ...entry.options.inject(), ...props })
+  }
+  return { render, section, card, calls, timers, dictionaries }
+}
+
+/** First element in a React tree whose className contains a needle. */
+function findByClass(node, needle) {
+  if (node === null || node === undefined || typeof node !== 'object') return undefined
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const hit = findByClass(child, needle)
+      if (hit !== undefined) return hit
+    }
+    return undefined
+  }
+  const className = node.props?.className
+  if (typeof className === 'string' && className.includes(needle)) return node
+  return findByClass(node.props?.children, needle)
+}
+
+/** Let the transport's promise chain and the state updates it triggers settle. */
+const settle = () => new Promise((resolve) => { setTimeout(resolve, 5) })
+
+const CATALOG_VIEW = (syncing = false) => ({
+  kind: 'commandcode-catalog',
+  syncing,
+  verified: !syncing,
+  origin: syncing ? 'bundled' : 'network',
+  planId: 'individual-goat',
+  planName: 'GOAT',
+  models: [],
+  failures: [],
+  warnings: [],
+})
+
+console.log('the sidebar card’s switch')
+{
+  await checkAsync('flipping the switch hides the card in the same document, with no reload', async () => {
+    let cardVisible = true
+    const { render, section, card, calls } = mountBoth({
+      answer: (payload) => {
+        // The host stores a write before it composes the answer, so the answer
+        // already reports the new value — see index.js `serve`.
+        if (typeof payload.cardVisible === 'boolean') cardVisible = payload.cardVisible
+        return { ok: true, value: { catalog: CATALOG_VIEW(false), cardVisible } }
+      },
+    })
+
+    render(card, { wide: true })
+    await settle()
+    const shown = render(card, { wide: true })
+    assert.notEqual(shown, null, 'the card should be on screen while the preference is on')
+    assert.ok(findByClass(shown, 'ccq-card') !== undefined, 'the full card was expected')
+
+    render(section)
+    await settle()
+    const tree = render(section)
+    const toggle = findByClass(tree, 'ccq-card-switch')
+    assert.ok(toggle !== undefined, 'the section must render the switch')
+    assert.equal(toggle.props.role, 'switch')
+    assert.equal(toggle.props['aria-checked'], true, 'the switch should start where the host says')
+
+    toggle.props.onClick()
+    await settle()
+    assert.equal(cardVisible, false, 'the host was never told about the switch')
+    // The claim under test: nothing had to poll for this to happen.
+    assert.equal(render(card, { wide: true }), null, 'the card stayed on screen after the switch went off')
+    const write = calls.find((entry) => typeof entry.payload.cardVisible === 'boolean')
+    assert.equal(write.payload.cardVisible, false)
+    assert.equal(write.method, 'cc-quota/report')
+  })
+
+  await checkAsync('the switch shows what the host holds, and turning it back on brings the card home', async () => {
+    let cardVisible = false
+    const { render, section, card } = mountBoth({
+      answer: (payload) => {
+        if (typeof payload.cardVisible === 'boolean') cardVisible = payload.cardVisible
+        return { ok: true, value: { catalog: CATALOG_VIEW(false), cardVisible } }
+      },
+    })
+
+    render(section)
+    await settle()
+    const off = findByClass(render(section), 'ccq-card-switch')
+    assert.equal(off.props['aria-checked'], false, 'a stored "off" must survive the round trip to the switch')
+    assert.equal(render(card, { wide: true }), null, 'a stored "off" must keep the card off the screen')
+
+    off.props.onClick()
+    await settle()
+    assert.equal(cardVisible, true)
+    assert.equal(findByClass(render(section), 'ccq-card-switch').props['aria-checked'], true)
+    assert.notEqual(render(card, { wide: true }), null, 'the card did not come back')
+  })
+
+  await checkAsync('a switch the host refuses is put back, and the section says why', async () => {
+    const { render, section } = mountBoth({
+      answer: (payload) => {
+        if (typeof payload.cardVisible === 'boolean') {
+          return { ok: false, error: { code: 'internal', message: '[EACCES] preferences are read-only' } }
+        }
+        return { ok: true, value: { catalog: CATALOG_VIEW(false), cardVisible: true } }
+      },
+    })
+    render(section)
+    await settle()
+    const toggle = findByClass(render(section), 'ccq-card-switch')
+    toggle.props.onClick()
+    await settle()
+    const tree = render(section)
+    assert.equal(findByClass(tree, 'ccq-card-switch').props['aria-checked'], true, 'the switch kept a value the host does not hold')
+    assert.ok(findByClass(tree, 'ccq-error') !== undefined, 'a refused write must say so rather than leave the lie on screen')
+  })
+
+  await checkAsync('a hidden card keeps checking slowly, so the switch still works later', async () => {
+    const { render, card, timers } = mountBoth({
+      answer: () => ({ ok: true, value: { catalog: CATALOG_VIEW(false), cardVisible: false } }),
+    })
+    render(card, { wide: true })
+    await settle()
+    assert.equal(render(card, { wide: true }), null)
+    // Five minutes: a local IPC read, not a vendor request — and the only thing
+    // that would notice the switch being flipped in another window.
+    assert.deepEqual(timers, [300_000], `a hidden card should idle, saw ${JSON.stringify(timers)}`)
+  })
+
+  await checkAsync('a card switched off stays off across a reload, even when the report fails', async () => {
+    // What a failed answer looks like: no report, and therefore no preference in
+    // it. Without the stored copy the card would come back as an error box the
+    // first time the network hiccuped — the one thing this switch promises not
+    // to do.
+    const store = new Map()
+    const storage = {
+      getItem: (key) => (store.has(key) ? store.get(key) : null),
+      setItem: (key, value) => { store.set(key, String(value)) },
+    }
+    const first = mountBoth({
+      answer: () => ({ ok: true, value: { catalog: CATALOG_VIEW(false), cardVisible: false } }),
+      storage,
+    })
+    first.render(first.card, { wide: true })
+    await settle()
+    assert.equal(store.get('dsh-commandcode-quota.cardVisible'), 'false', 'the preference was not remembered locally')
+
+    const reloaded = mountBoth({
+      answer: () => ({ ok: false, error: { code: 'internal', message: '[NETWORK] cannot reach Command Code' } }),
+      storage,
+    })
+    assert.equal(
+      reloaded.render(reloaded.card, { wide: true }),
+      null,
+      'the card came back as an error box after the user had switched it off',
+    )
+  })
+
+  check('both languages carry the switch, and the nav label still fits the rail', () => {
+    const { dictionaries } = mountBoth({ answer: () => ({ ok: true, value: { catalog: CATALOG_VIEW(false) } }) })
+    const dictionary = dictionaries['cc-quota']
+    assert.ok(dictionary !== undefined, 'the plugin must register its dictionary')
+    assert.deepEqual(
+      Object.keys(dictionary.zh).sort(),
+      Object.keys(dictionary.en).sort(),
+      'a key present in one language and missing in the other renders as a raw key name',
+    )
+    for (const key of ['nav', 'title', 'intro', 'cardToggle', 'cardToggleHint', 'cardToggleFailed']) {
+      assert.equal(typeof dictionary.zh[key], 'string', `zh.${key} is missing`)
+      assert.equal(typeof dictionary.en[key], 'string', `en.${key} is missing`)
+    }
+    // The nav row is about 124px wide and truncates; the section now covers the
+    // counts *and* the card, so the name had to be short rather than descriptive.
+    assert.ok(dictionary.zh.nav.length <= 6, `zh.nav is ${dictionary.zh.nav.length} characters: it will truncate`)
+    assert.ok(dictionary.en.nav.length <= 16, `en.nav is ${dictionary.en.nav.length} characters: it will truncate`)
   })
 }
 

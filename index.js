@@ -146,6 +146,65 @@ function writeSnapshot(file, report, fingerprint) {
 }
 
 /**
+ * The plugin's own preferences — the settings a user picks for this plugin's
+ * own UI, as opposed to anything the account reports.
+ *
+ * One file beside the snapshot, one flag so far: whether the sidebar card is
+ * wanted. It is a preference, so it has to survive a restart, must never be
+ * inferred from the account (a Command Code user on another model still wants
+ * the choice), and a corrupt file must never break the panel.
+ *
+ * @returns the absolute path of the preferences file.
+ */
+function preferencesPath() {
+  return path.join(path.dirname(quotaSnapshotPath()), 'settings.json')
+}
+
+/**
+ * Read the stored preferences, filling in defaults for anything missing.
+ *
+ * Every failure mode — no file, unreadable file, not JSON, a hostile shape —
+ * means "the user has not said otherwise", never an error the user sees.
+ *
+ * @returns `{ cardVisible: boolean }`.
+ */
+function readPreferences() {
+  try {
+    const parsed = JSON.parse(readFileSync(preferencesPath(), 'utf8'))
+    if (parsed === null || typeof parsed !== 'object') return { cardVisible: true }
+    // Only an explicit `false` hides the card: an older file, a newer file, or a
+    // field somebody renamed all keep the card the user already had.
+    return { cardVisible: parsed.cardVisible !== false }
+  } catch {
+    return { cardVisible: true }
+  }
+}
+
+/**
+ * Merge a patch into the stored preferences. Atomic and best effort.
+ *
+ * A read-only home directory costs the user the switch (it answers, it just
+ * cannot remember), never the panel. Written beside the target and renamed, for
+ * the same reason the snapshot is: a second reader never sees half a file.
+ *
+ * @param patch - the preference fields to change.
+ * @returns the preferences as they now stand.
+ */
+function writePreferences(patch) {
+  const next = { version: 1, ...readPreferences(), ...patch }
+  const file = preferencesPath()
+  try {
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    const temp = `${file}.${process.pid}.tmp`
+    writeFileSync(temp, `${JSON.stringify(next, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+    renameSync(temp, file)
+  } catch {
+    // Ignored on purpose: see above.
+  }
+  return next
+}
+
+/**
  * An RPC error result, in the same shape the Connection transport uses.
  * @param rpcId - the caller's correlation id.
  * @param code - stable machine-readable code.
@@ -437,6 +496,22 @@ export function apply(ctx) {
   }
 
   /**
+   * Attach the plugin's own preferences to a report result.
+   *
+   * The sidebar card reads `cardVisible` from every answer, including the ones
+   * it gets while hidden, so the switch in the settings panel takes effect
+   * without a page reload and survives one. One boolean on every answer is
+   * cheaper than a second round trip to ask about it.
+   *
+   * @param result - the RPC result for the quota report.
+   * @returns the result with `value.cardVisible` added.
+   */
+  const withPreferences = (result) => {
+    if (result?.ok !== true) return result
+    return { ...result, value: { ...result.value, cardVisible: readPreferences().cardVisible } }
+  }
+
+  /**
    * Read once from upstream, then cache and persist the result.
    * @returns the RPC result for this read; never throws.
    */
@@ -565,13 +640,17 @@ export function apply(ctx) {
     // carried a ~21 KB catalog the card never reads (97 % of a 22 KB response).
     const payload = message.payload !== null && typeof message.payload === 'object' ? message.payload : undefined
     const wantsCatalog = payload?.catalog === true || payload?.catalogRefresh === true
+    // The sidebar card's visibility is the user's choice, made with the settings
+    // panel's switch. Writing it here — before the answer is composed — means the
+    // answer already reports the new value, so the switch cannot flicker back.
+    if (typeof payload?.cardVisible === 'boolean') writePreferences({ cardVisible: payload.cardVisible })
     // The two reads are independent, so they run at the same time: a cold panel
     // used to pay the quota round trip and the catalog round trips one after the
     // other. Rejection is impossible — `report` converts every failure into an
     // RPC result — but the guard keeps that from being a load-bearing assumption.
     const quotaRead = report({ allowStale: true })
     if (!wantsCatalog) {
-      return envelope(rpcId, await quotaRead)
+      return envelope(rpcId, withPreferences(await quotaRead))
     }
     // `withCatalog` inspects the result, so it must be handed the *settled*
     // value: handing it the promise makes its `ok !== true` guard fire and the
@@ -583,7 +662,7 @@ export function apply(ctx) {
       check: payload?.catalog === true,
       refresh: payload?.catalogRefresh === true,
     }).catch(() => result)
-    return envelope(rpcId, catalogRead)
+    return envelope(rpcId, withPreferences(catalogRead))
   }
 
   ctx.effect(() => ctx.connection.fetch.register({

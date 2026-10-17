@@ -159,11 +159,19 @@ window.__ModuleLoader__.load({
         errGeneric: '读取失败',
 
         // Settings-panel section: the plan-level overview, the per-model table,
-        // and every line that qualifies them. Nothing here may imply a number
-        // the official site never published — see formatCount().
-        nav: '调用次数',
-        title: '模型调用次数',
-        intro: '当前套餐下，每个模型大概还能调用多少次。数字按官方的模型额度、单价和一次典型请求的用量换算，仅供参考。',
+        // the sidebar card's own switch, and every line that qualifies them.
+        // Nothing here may imply a number the official site never published —
+        // see formatCount().
+        //
+        // The name covers the whole section, not just the table: it holds the
+        // plan's allowance, the per-model counts, and whether the card below the
+        // sidebar is wanted at all.
+        nav: '额度与卡片',
+        title: '额度、调用次数与卡片',
+        intro: '当前套餐下，每个模型大概还能调用多少次。数字按官方的模型额度、单价和一次典型请求的用量换算，仅供参考；下面的开关决定左下角要不要显示这张卡片。',
+        cardToggle: '在侧边栏显示额度卡片',
+        cardToggleHint: '关掉后左下角不再显示这张卡片；在这里随时可以再打开。',
+        cardToggleFailed: '没能保存这个开关：{message}',
         loading: '正在读取官方次数表…',
         planFallback: '当前套餐',
         planLevel: '套餐级额度',
@@ -228,9 +236,12 @@ window.__ModuleLoader__.load({
         errGeneric: 'could not read the account',
 
         // Settings-panel section; see the zh block for the reasoning.
-        nav: 'Call counts',
-        title: 'Model call counts',
-        intro: 'Roughly how many calls each model allows on the current plan. Estimated from the official model allowance, token prices, and one typical request — a reference, not a limit.',
+        nav: 'Quota & card',
+        title: 'Quota, call counts & card',
+        intro: 'Roughly how many calls each model allows on the current plan. Estimated from the official model allowance, token prices, and one typical request — a reference, not a limit. The switch below decides whether this plugin also puts a card under the sidebar.',
+        cardToggle: 'Show the quota card in the sidebar',
+        cardToggleHint: 'Turn it off and the card disappears from the bottom-left; turn it back on here whenever you want it.',
+        cardToggleFailed: 'Could not save this switch: {message}',
         loading: 'Reading the official call table…',
         planFallback: 'Current plan',
         planLevel: 'Plan allowance',
@@ -333,6 +344,28 @@ window.__ModuleLoader__.load({
   border:.5px solid var(--dsw-alias-settings-card-stroke);background:var(--dsw-alias-settings-card-fill)}
 .ccq-sec .ccq-note{margin-top:8px}
 .ccq-sec .ccq-warn{margin-top:8px}
+/* --- the sidebar-card switch ---
+   A plugin cannot reach the host's own switch component, so this is the same
+   shape built from the same tokens: a 36x20 track that fills with the status
+   green the card already uses, and a knob that slides. The aria-checked
+   attribute carries the state, so the stylesheet and the accessibility tree
+   cannot disagree. */
+.ccq-switch-row{display:flex;align-items:center;gap:12px;margin-top:10px}
+.ccq-switch-text{flex:1;min-width:0}
+.ccq-switch-label{font-size:13px;line-height:20px;font-weight:500;color:var(--dsw-alias-label-primary)}
+.ccq-switch-note{margin-top:2px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-caption)}
+.ccq-switch{position:relative;flex:none;box-sizing:border-box;width:36px;height:20px;padding:0;
+  border:.5px solid var(--dsw-alias-border-l2);border-radius:10px;
+  background:var(--dsw-alias-interactive-bg-hover);cursor:pointer;transition:background 150ms ease}
+/* The knob is the elevated-surface token the card itself uses, and the hairline
+   border above keeps its edge visible in either theme — the one case a
+   theme-polarity colour cannot solve on its own. */
+.ccq-switch::after{content:'';position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;
+  background:var(--dsw-alias-button-elevated-fill);transition:transform 150ms ease}
+.ccq-switch[aria-checked="true"]{background:var(--dsw-alias-state-success-primary)}
+.ccq-switch[aria-checked="true"]::after{transform:translateX(16px)}
+.ccq-switch:disabled{opacity:.6;cursor:default}
+.ccq-switch:focus-visible{outline:2px solid var(--dsw-alias-link);outline-offset:2px}
 /* The settings nav draws its own icon before the section label, picked from a
    hard-coded table of built-in ids; a plugin's own mark therefore arrives as the
    label's first child, and the built-in fallback has to be hidden — otherwise the
@@ -564,6 +597,71 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
     }
 
     /**
+     * Whether the sidebar card is wanted, and who wants to hear about it.
+     *
+     * The switch lives in the settings section and the card lives in the
+     * sidebar: two components the shell mounts independently, with no shared
+     * parent and no store between them. This module-level value is how a flip
+     * reaches the card in the same document — otherwise the card would have to
+     * wait out its own poll (up to a minute) before disappearing, which reads as
+     * a broken switch. The host's answer stays the authority: it is what
+     * survives a reload, and every answer carries the value back.
+     */
+    const CARD_VISIBLE_KEY = 'dsh-commandcode-quota.cardVisible'
+
+    /**
+     * The last preference this browser was told, from web storage.
+     *
+     * The host is the authority, but its answer is not always there to ask: a
+     * report that failed, or a cold start with no network, carries no preference
+     * at all. Without a local copy a card the user had switched off would come
+     * back as an error box on the next hiccup — the one thing this switch
+     * promises not to do.
+     *
+     * @returns the stored preference, or `true` when nothing usable is stored.
+     */
+    function storedCardVisible() {
+      try {
+        const raw = window.localStorage?.getItem(CARD_VISIBLE_KEY)
+        if (raw === 'false') return false
+        if (raw === 'true') return true
+      } catch {
+        // Storage blocked (privacy mode, a hostile embedding): fall through to
+        // the card the user already had rather than guess, and never throw from
+        // a bundle that has to render.
+      }
+      return true
+    }
+
+    /** Remember a preference for the answers that cannot carry one. */
+    function storeCardVisible(value) {
+      try {
+        window.localStorage?.setItem(CARD_VISIBLE_KEY, value ? 'true' : 'false')
+      } catch {
+        // See above: best effort, never a reason to stop rendering.
+      }
+    }
+
+    let cardVisible = storedCardVisible()
+    /** @type {Set<(value: boolean) => void>} */
+    const cardVisibleWatchers = new Set()
+
+    /**
+     * Adopt a new value for the sidebar card's visibility and tell the card.
+     *
+     * Ignores anything that is not a boolean: an older host answers without the
+     * field, and "no answer" must never be read as "hide the card".
+     *
+     * @param value - the preference as the host reported it (or as the switch set it).
+     */
+    function publishCardVisible(value) {
+      if (typeof value !== 'boolean' || value === cardVisible) return
+      cardVisible = value
+      storeCardVisible(value)
+      for (const watcher of [...cardVisibleWatchers]) watcher(cardVisible)
+    }
+
+    /**
      * Fetch the report, then keep fetching on a cadence that tightens while any
      * window is close to its cap. The last good report survives failures, so a
      * transient error dims the numbers instead of blanking the card.
@@ -574,9 +672,23 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
     function useQuota(fetchQuota) {
       const [state, setState] = React.useState({ phase: 'idle' })
       const [nonce, setNonce] = React.useState(0)
+      // Hidden is a rendering decision, not a data one: the poll below keeps
+      // running (slowly) so the switch can be flipped back without a reload.
+      const [shown, setShown] = React.useState(cardVisible)
+
+      /**
+       * The card coming back after being hidden reads at once: showing numbers
+       * from up to five minutes ago would make the switch look like it did
+       * nothing else.
+       */
+      const onCardVisible = React.useCallback((value) => {
+        setShown(value)
+        if (value) setNonce((current) => current + 1)
+      }, [])
 
       React.useEffect(() => {
         const controller = new AbortController()
+        cardVisibleWatchers.add(onCardVisible)
         let timer
         // How many answers in a row have been snapshots. The first one earns a
         // quick re-read — a live report is already on its way, and this is the
@@ -608,7 +720,18 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
                   timer = window.setTimeout(load, ABSENT_MS)
                   return
                 }
+                // The switch is the user's, so the answer decides visibility —
+                // including the answer that arrives right after the switch was
+                // flipped in another window.
+                publishCardVisible(value?.cardVisible)
                 setState({ phase: 'ready', report: value, at: Date.now() })
+                if (value !== null && typeof value === 'object' && value.cardVisible === false) {
+                  // Hidden: no reason to keep a card-sized poll going. A local
+                  // read every few minutes is enough to notice the switch being
+                  // turned back on somewhere else.
+                  timer = window.setTimeout(load, ABSENT_MS)
+                  return
+                }
                 const isSnapshot = value.stale === true
                 staleStreak = isSnapshot ? staleStreak + 1 : 0
                 // A window that is burning keeps its cadence even when the report
@@ -631,13 +754,14 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
         }
         load()
         return () => {
+          cardVisibleWatchers.delete(onCardVisible)
           window.clearTimeout(timer)
           controller.abort()
         }
-      }, [fetchQuota, nonce])
+      }, [fetchQuota, nonce, onCardVisible])
 
       const refresh = React.useCallback(() => { setNonce((value) => value + 1) }, [])
-      return { state, refresh }
+      return { state, refresh, shown }
     }
 
     /** One credit window: label, percentage, the meter, and the reset chip. */
@@ -794,9 +918,12 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
     /** The sidebar-foot card. */
     function QuotaCard(props) {
       const [open, setOpen] = React.useState(false)
-      const { state, refresh } = useQuota(props.fetchQuota)
+      const { state, refresh, shown } = useQuota(props.fetchQuota)
       const t = props.t
 
+      // Hidden by the user's own switch: the hook keeps polling, but nothing is
+      // rendered — not the card and not the collapsed rail badge either.
+      if (shown === false) return null
       // Nothing to say: this host does not use Command Code, or the first answer
       // has not arrived. Rendering nothing avoids an error box for non-users and
       // a flash of skeleton for everyone else.
@@ -952,6 +1079,10 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
      * Code provider at all (`absent`), and a failure (`error`, keeping whatever
      * the section already had). Everything else renders.
      *
+     * Each answer also carries the sidebar-card preference, which the section
+     * owns a switch for. A host that predates the field answers without it, and
+     * "no answer" keeps the switch where the user left it rather than guessing.
+     *
      * @param result - the `server-response` envelope the host returns.
      * @param previous - the catalog already on screen, carried across failures.
      * @returns the section's next state.
@@ -970,7 +1101,8 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
         // answer — an empty panel would look like a statement about the plan.
         return { phase: 'hidden' }
       }
-      return { phase: 'ready', catalog }
+      const cardVisible = typeof value.cardVisible === 'boolean' ? value.cardVisible : undefined
+      return { phase: 'ready', catalog, ...(cardVisible === undefined ? {} : { cardVisible }) }
     }
 
     /**
@@ -990,6 +1122,7 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
     function useCatalog(props) {
       const [state, setState] = React.useState({ phase: 'loading' })
       const [refreshing, setRefreshing] = React.useState(false)
+      const [savingCard, setSavingCard] = React.useState(false)
       // The transport lives in a ref: a shell that hands over a fresh injected
       // face on every render must not make the mount read run again.
       const transport = React.useRef(props)
@@ -998,6 +1131,7 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
       // lives with the component: unmounting the section must not leave the
       // request running with nothing left to receive its answer.
       const refreshController = React.useRef(null)
+      const cardController = React.useRef(null)
 
       React.useEffect(() => {
         const controller = new AbortController()
@@ -1016,6 +1150,9 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
             .then(
               (result) => {
                 if (controller.signal.aborted) return
+                // The card is a different component: adopt the host's preference
+                // here, outside the state updater, which has to stay pure.
+                publishCardVisible(result?.ok === true ? result.value?.cardVisible : undefined)
                 setState((previous) => catalogState(result, previous.catalog))
                 // The host answered from local data while its check runs behind
                 // that answer: come back for the result rather than leave the
@@ -1044,6 +1181,7 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
           window.clearTimeout(timer)
           controller.abort()
           refreshController.current?.abort()
+          cardController.current?.abort()
         }
       }, [])
 
@@ -1055,6 +1193,7 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
           .then(
             (result) => {
               if (refreshController.signal.aborted) return
+              publishCardVisible(result?.ok === true ? result.value?.cardVisible : undefined)
               setState((previous) => catalogState(result, previous.catalog))
               setRefreshing(false)
             },
@@ -1069,7 +1208,57 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
           )
       }, [])
 
-      return { state, refreshing, refresh }
+      /**
+       * Flip the sidebar card's visibility.
+       *
+       * Order matters. The switch moves first, because a control that waits for a
+       * round trip before acknowledging a click reads as broken; the card in this
+       * document hides or returns at the same moment, which is what makes the
+       * switch feel connected to the thing it controls; the host is told last,
+       * because remembering the choice is its job. A write the host refuses puts
+       * the switch back and says why, rather than leaving a lie on screen.
+       *
+       * @param next - the value the user moved the switch to.
+       */
+      const toggleCard = React.useCallback((next) => {
+        cardController.current = new AbortController()
+        setSavingCard(true)
+        setState((previous) => ({ ...previous, cardVisible: next, cardError: undefined }))
+        publishCardVisible(next)
+        Promise.resolve()
+          .then(() => transport.current.setCardVisible(next, cardController.current.signal))
+          .then(
+            (result) => {
+              if (cardController.current.signal.aborted) return
+              setSavingCard(false)
+              const answered = result !== null && typeof result === 'object' && result.ok === true
+              const confirmed = answered && result.value !== null && typeof result.value === 'object'
+                ? result.value.cardVisible
+                : undefined
+              if (typeof confirmed === 'boolean') {
+                // The host is the authority: adopt what it says it stored.
+                setState((previous) => ({ ...previous, cardVisible: confirmed }))
+                publishCardVisible(confirmed)
+                return
+              }
+              const message = answered ? 'the host did not report the preference back' : describeError(result)
+              setState((previous) => ({ ...previous, cardVisible: !next, cardError: message }))
+              publishCardVisible(!next)
+            },
+            (error) => {
+              if (cardController.current.signal.aborted) return
+              setSavingCard(false)
+              setState((previous) => ({
+                ...previous,
+                cardVisible: !next,
+                cardError: String(error?.message ?? error),
+              }))
+              publishCardVisible(!next)
+            },
+          )
+      }, [])
+
+      return { state, refreshing, refresh, savingCard, toggleCard }
     }
 
     /** Human wording for one warning code from the host's catalog view. */
@@ -1240,7 +1429,7 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
     function QuotaSettingsSection(props) {
       const t = sectionT
       const [expanded, setExpanded] = React.useState(false)
-      const { state, refreshing, refresh } = useCatalog(props)
+      const { state, refreshing, refresh, savingCard, toggleCard } = useCatalog(props)
 
       if (state.phase === 'loading') {
         return h('section', { className: 'ccq-sec' },
@@ -1287,6 +1476,11 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
       const coverage = catalog?.coverage
       const published = typeof coverage?.published === 'number' ? coverage.published : 0
       const available = typeof coverage?.available === 'number' ? coverage.available : 0
+      // The switch's own state: a host too old to answer with the preference
+      // leaves it where the user last saw it, which is `true` — the card they
+      // already have.
+      const cardOn = state.cardVisible !== false
+      const cardError = state.cardError
 
       // A failed first read has no catalog to describe: the error line and the
       // button are then the whole story. A plan panel, a provenance line or a
@@ -1306,6 +1500,32 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
               out: formatCount(basis.outputTokens),
               cache: formatCount(basis.cacheReadTokens),
             })),
+        ),
+        // The card's own switch, near the top: somebody who came here to get rid
+        // of the card should not have to scroll past a table of 56 models to find
+        // the control that does it.
+        h('div', { key: 'card', className: 'ccq-panel' },
+          h('div', { className: 'ccq-switch-row' },
+            h('div', { className: 'ccq-switch-text' },
+              h('div', { className: 'ccq-switch-label' }, t('cardToggle')),
+              h('div', { className: 'ccq-switch-note' }, t('cardToggleHint')),
+            ),
+            h('button', {
+              type: 'button',
+              className: 'ccq-switch ccq-card-switch',
+              role: 'switch',
+              // The state lives in the accessibility tree, not only in the pixels.
+              'aria-checked': cardOn,
+              'aria-label': t('cardToggle'),
+              disabled: savingCard,
+              onClick: () => toggleCard(!cardOn),
+            }),
+          ),
+          cardError === undefined ? null : h('div', {
+            key: 'card-error',
+            className: 'ccq-error',
+            title: cardError,
+          }, format(t('cardToggleFailed'), { message: errorText(cardError, t) })),
         ),
         ...catalogStatus(catalog, t).map((line) => h('div', {
           key: line.key,
@@ -1397,6 +1617,10 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
           // return the cache forever: the card's own poll never re-validates.
           fetchQuota: (signal, payload) => ctx.connection.rpc.call(CHANNEL, ENDPOINT, payload ?? { catalog: true }, signal),
           refreshQuota: (signal) => ctx.connection.rpc.call(CHANNEL, ENDPOINT, { catalogRefresh: true }, signal),
+          // The switch's write. It asks for the catalog as well: the answer
+          // replaces this section's state, and an answer without a catalog would
+          // read as "this host cannot show a catalog at all" and blank the panel.
+          setCardVisible: (cardVisible, signal) => ctx.connection.rpc.call(CHANNEL, ENDPOINT, { cardVisible, catalog: true }, signal),
         }),
       }, QuotaSettingsSection))
 

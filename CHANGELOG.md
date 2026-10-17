@@ -2,6 +2,50 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] — 2026-10-17
+
+### Added
+
+- **The sidebar card can now be switched off, from the section that already talks about quota.** The card lives
+  under the sidebar because a Command Code user usually wants it there — but somebody working in another model
+  all week does not, and until now the only way to get the space back was to uninstall the plugin. Settings holds
+  a switch, **Show the quota card in the sidebar**; turn it off and the card (and its collapsed rail badge)
+  leaves the bottom-left at once, turn it on and it comes back. The choice is a display preference, stored by
+  the host in the plugin's own directory (`$DSH_HOME/dsh-commandcode-quota/settings.json`, 0600, written
+  atomically) and never sent anywhere; it survives a restart, and a corrupt or unreadable file means "show the
+  card", never a broken panel. Flipping the switch moves the switch, hides the card in the same document, and
+  tells the host — in that order, so the control never waits on a round trip before acknowledging the click, and
+  a write the host refuses puts the switch back and says why instead of leaving a lie on screen. The browser
+  keeps its own copy of the last answer in web storage, because a failed report carries no preference at all:
+  without it, a card somebody had switched off would come back as an error box on the next network hiccup. While
+  hidden the card keeps one slow check every five minutes (a local IPC read, never a vendor request) so flipping
+  the switch in another window is still noticed.
+- **The section is called 「额度与卡片」 / “Quota & card”, not 「调用次数」 / “Call counts”.** It holds the
+  plan's allowance, the per-model counts *and* the card's switch now, so the old name described less than half of
+  it. The nav label stays short on purpose: the row is about 124 px and truncates, which is why the descriptive
+  name lives in the section heading instead.
+
+### Fixed
+
+- **A key pasted into `settings.yaml` could keep serving the previous account if the write landed in the same
+  `mtime` tick.** The credential-configuration signature (what decides whether the 15-second report cache still
+  describes the account you are asking about) compared modification times and sizes. Two writes inside one
+  timestamp tick — routine for a programmatic rewrite, and possible on NTFS for a human one — left the signature
+  identical, so the cache went on answering with the old account. The small DSH config files are now hashed by
+  content; the multi-megabyte credential stores keep the cheap stat comparison, because only an explicit user
+  action rewrites them and that cannot happen inside one tick. Found by a check that failed one run in about
+  six (`tests/host.test.mjs`, "pasting a different key does not keep serving the previous account"), which is
+  the sort of thing a flaky test is for.
+
+### Tests
+
+- 267 → 280 offline checks. The switch brought six client checks (the card disappears in the same document with
+  no poll, a stored "off" survives the round trip to the switch *and* keeps the card off screen, a refused write
+  is put back and reported, a hidden card idles at five minutes, a card switched off survives a reload whose
+  report fails, and both dictionaries carry the new wording with a nav label short enough not to truncate) and
+  seven host checks (default on, written, carried by later polls and by catalog answers, turned back on, corrupt
+  file, junk value). Verified on Node 18.20.4 and Node 24.13.0.
+
 ## [Unreleased] — 2026-10-04
 
 The section was slow to answer, and the reason was not the numbers: opening **Settings → Call counts**

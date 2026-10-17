@@ -462,13 +462,26 @@ export function authConfigSignature(options = {}) {
   const home = options.home ?? os.homedir();
   const dshHome = options.dshHome ?? env.DSH_HOME ?? path.join(home, '.dsh');
   const parts = [];
+  // 设置文件按**内容**入签名，凭据库只按 mtime/size。
+  //
+  // 两类文件的取舍不同：设置文件只有几 KB，读一遍比「mtime 没变就以为没变」可靠得多
+  // —— 两次写入落在同一个 mtime 刻度里（NTFS 上完全可能，程序化改写更是必然）时，
+  // 按 mtime 比会把新 key 当成旧 key，缓存于是继续拿旧账号的数字回答。凭据库可能有
+  // 几 MB，每次请求读一遍不值，而它只由用户在界面上动手才会变，刻度内的改写不是它
+  // 的风险。
+  const configFiles = new Set(dshConfigFiles(dshHome, home));
   for (const file of [
-    ...dshConfigFiles(dshHome, home),
+    ...configFiles,
     path.join(dshHome, '.credentials.yaml'),
     path.join(home, '.dsh', '.credentials.yaml'),
     path.join(home, '.commandcode', 'auth.json'),
   ]) {
     try {
+      if (configFiles.has(file)) {
+        const digest = createHash('sha256').update(readFileSync(file)).digest('hex').slice(0, 16);
+        parts.push(`${file}#${digest}`);
+        continue;
+      }
       const stat = statSync(file);
       parts.push(`${file}:${stat.mtimeMs}:${stat.size}`);
     } catch {

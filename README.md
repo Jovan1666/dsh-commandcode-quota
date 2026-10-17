@@ -26,7 +26,7 @@ No browser tab, no login, no guessing how much of the plan is left.
 | **Percentage first** | The headline rounds to a whole percent, exactly like the Command Code dashboard, so the card and the website never disagree |
 | **Money where it matters** | Used and remaining for the monthly allowance; exact figures for every row on hover |
 | **Instant, then live** | The card is on screen about 2 ms after a restart, and live about a second later |
-| **Quiet when it should be** | No Command Code account? The card does not render at all |
+| **Quiet when it should be** | No Command Code account? The card does not render at all — and if you just want the sidebar to yourself, switch it off from Settings |
 | **Bilingual** | The card follows your DSH interface language (中文 / English) |
 | **Per-model allowances** | What this plan gives each model, in Settings — the models you configured first |
 
@@ -154,7 +154,9 @@ The sidebar is about 200 px of content width, and a laptop screen makes small ty
 
 ## Per-model allowances, in Settings
 
-The card answers *how deep am I*. **Settings → Call counts** answers the other question: *what would this plan give me if I only ever called this model?*
+The card answers *how deep am I*. **Settings → Quota & card** answers the other question: *what would this plan give me if I only ever called this model?* — and holds the switch that decides whether the card exists at all.
+
+**Use another model and want the sidebar back?** The first panel in that section has a switch: **Show the quota card in the sidebar**. Turn it off and the card (and its collapsed rail badge) disappears from the bottom-left immediately — no reload, no restart — and the choice is remembered across restarts. Turn it back on whenever you want the numbers again. Nothing about the account changes; it is a display preference, stored in the plugin's own directory (`$DSH_HOME/dsh-commandcode-quota/settings.json`) and never sent anywhere.
 
 Every model the plan can call, with requests per 5 hours, per week and per month — the models you configured in DSH first. Above the table sits the plan-level headline (`GOAT · $70 · ~75K requests`): a different figure on a different basis, labelled so the two are never read as one number.
 
