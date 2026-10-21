@@ -2,6 +2,39 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] — 2026-10-21
+
+**This repository is the plugin's only home again.** Its content had been distributed from a shared monorepo
+(`commandcode-usage`) that carried one core library and seven adapters — Claude Code, Codex, Grok, OpenCode, Pi,
+ZCode and this one — and this repository was the *copy* of the DSH adapter. The other six adapters are retired,
+so the monorepo has nothing left to be the source of; this repository is the source itself, with the plugin at
+the repository root, and that is the whole of it.
+
+### Removed
+
+- **The distribution guard.** `.sync-source.json`, `scripts/verify-core.mjs` and the *Verify synced sources*
+  workflow existed for one reason: to fail the build if somebody edited this copy in place, because the next
+  release would silently overwrite that edit. There is no next release from somewhere else now — nothing to
+  record, nothing to compare against — and a check whose premise has gone is worse than no check: it keeps
+  passing while nobody can say what it protects. Its removal is the point of this entry, so the file list in
+  the repository root is the plugin and nothing else.
+
+### Changed
+
+- **Editing this repository is how the plugin changes.** The old loop — implement in the monorepo, run
+  `node scripts/release.mjs --write`, commit the regenerated copy here — no longer exists, and neither do the
+  six sibling adapters or the shared core they needed. Everything this plugin ships is in this repository:
+  `index.js` (host half), `client.js` (browser half), `quota.mjs` (the account data layer), `catalog.mjs` (the
+  per-model allowance directory), `catalog.seed.json` (the offline baseline), `cli/`, `preview/` and the
+  offline suites under `tests/`.
+
+### Tests
+
+- The 280 offline checks are unchanged and still green (`node scripts/verify.mjs`), on Node 18.20.4 and
+  Node 24.13.0. Nothing about them was tied to the monorepo: `scripts/verify.mjs` never ran the removed guard,
+  and `scripts/check.mjs` (static checks, credential/privacy scan, package identity, then the suites) is the
+  same entry point CI has always used.
+
 ## [Unreleased] — 2026-10-17
 
 ### Added
