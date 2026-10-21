@@ -4,6 +4,27 @@ All notable changes to this project are documented here.
 
 ## [Unreleased] — 2026-10-21
 
+### Fixed
+
+- **A failed live read no longer keeps answering with the last snapshot.** The disk snapshot is only the first paint after a restart. Once that read fails, the next answer is the failure: the card keeps the previous numbers, dims them, and says so, instead of showing yesterday's percentages for up to six hours.
+- **A failed first catalog check no longer hides the bundled baseline.** An empty cache still records that the attempt happened, so the panel does not retry on every mount, but the settings section keeps the shipped call table and the check's failures. It does not claim the official catalog has no such plan.
+- **“Check for updates” comes back when the section stops waiting.** A quiet backoff is not reported as a check still running, and an explicit refresh is not held by the few-second gate. After the section gives up on a long check, the button is enabled again.
+- **The sidebar switch stays where it was put when the quota read fails.** The preference is written before the account is read. A failed read used to look like a refused write, so the switch snapped back and then flipped again on the next successful poll.
+- **Models configured on a Command Code route stay pinned when `baseURL` and `models:` are not adjacent.** A sibling key such as `apiKeyEnv` between them, or `models:` listed first, no longer drops the list.
+- **A missing API key on a configured route says so.** The card no longer collapses that case into a generic “could not read the account”.
+- **The CLI draws no bar when a window has no percentage.** An empty bar read as 0% used. `--help` now describes a catalog refresh as two rounds bounded by `--catalog-timeout`, not four stacked requests.
+
+### Changed
+
+- **The collapsed rail badge names the tightest window.** The percentage stays in the text colour; the ring carries the level. The reset chip is only the duration, in the UI language (`59分` / `3时05分` / `6天9时`, or `59m` / `3h 05m` / `6d 9h`), so it does not push the percentage out of the row. “Resets in” and the clock time stay on the hover.
+- **The call table marks the models you configured** with a short “in use” tag, and the column headings say the figures are call counts. An unpublished tier (Provider, Teams) is described in words, not left as a raw warning code.
+
+### Tests
+
+- Offline checks 280 → 289 (`node scripts/verify.mjs`). The new checks fail on the previous behaviour: a second poll after a dead read is the error, not the snapshot; a saved switch is confirmed when the quota read fails; an empty failed catalog still shows the bundled models; a sibling key does not drop `models:`; giving up on a long check re-enables the button.
+
+## [Unreleased] — 2026-10-21
+
 **This repository is the plugin's only home again.** Its content had been distributed from a shared monorepo
 (`commandcode-usage`) that carried one core library and seven adapters — Claude Code, Codex, Grok, OpenCode, Pi,
 ZCode and this one — and this repository was the *copy* of the DSH adapter. The other six adapters are retired,

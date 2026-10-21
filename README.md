@@ -136,7 +136,7 @@ Two things make the difference:
 | **Weekly** | Rolling 7-day limit | `$35` |
 | **Monthly** | The billing period's credit allowance | `$70` |
 
-Each row shows the **used percentage** (green below 60 %, amber below 85 %, red above), a meter in the same colour, and a **reset countdown** (`59m`, `6d9h`, `8d1h`). Click the card for the monthly allowance in money, the remaining credit, the request count and the token totals. Collapse the sidebar and the card becomes a 36 px badge showing the **most constrained** window.
+Each row shows the **used percentage** (green below 60 %, amber below 85 %, red above), a meter in the same colour, and a **reset countdown**. The chip is only the duration, in the UI language, so it does not push the percentage out of a 200 px row: `59分` / `3时05分` / `6天9时` in Chinese, `59m` / `3h 05m` / `6d 9h` in English. “Resets in” and the clock time stay on the hover. Click the card for the monthly allowance in money, the remaining credit, the request count and the token totals. Collapse the sidebar and the card becomes a 36 px badge showing which window is **most constrained**, and that window’s percentage.
 
 ### Reading the numbers
 

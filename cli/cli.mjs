@@ -124,7 +124,7 @@ function printUsage() {
       '  --color / --no-color  强制开关 ANSI 颜色',
       '  --base <url>     API 基地址，默认 ' + DEFAULT_API_BASE,
       '  --timeout <ms>   单端点超时，默认 ' + resolveTimeoutMs() + '（可用 ' + TIMEOUT_ENV_NAME + ' 覆盖）',
-      '  --catalog-timeout <ms>  单页目录核对超时，默认 ' + CATALOG_TIMEOUT_MS + '（--refresh-catalog 最坏 4 次请求叠加上限）',
+      '  --catalog-timeout <ms>  单页目录核对超时，默认 ' + CATALOG_TIMEOUT_MS + '（--refresh-catalog 最坏两轮请求，每轮不超过该超时）',
       '  --key <key>      显式 API key（优先级最高，会留在 shell 历史里）',
       '',
       '  --models         打印当前套餐的「模型 → 5 小时/每周/每月次数」表（数字取自本地缓存/内置基线，绝不核对官方）',
@@ -229,9 +229,12 @@ function windowLine(label, window, options, withMoney = false) {
     const reset = countdown(window.resetAt);
     return [`${heading} ${' '.repeat(BAR_WIDTH + 2)}本次读数跨了计费周期${reset === undefined ? '' : `，${when(window.resetAt)} 重置（${reset}）`}`];
   }
-  const percent = window.percent;
+  const percent = typeof window.percent === 'number' && Number.isFinite(window.percent) ? window.percent : undefined;
   const span = withMoney ? ` · ${money(window.used)} / ${money(window.cap)}` : '';
-  const head = `${heading} ${bar(percent, options.ascii, options.color)} ${percent === undefined ? '—' : `${percent.toFixed(1)}%`}${span}`;
+  // 没有百分比就不画条。一条空条在等宽字体里就是 0% 已用，和卡片的取舍相反。
+  const head = percent === undefined
+    ? `${heading} —`
+    : `${heading} ${bar(percent, options.ascii, options.color)} ${percent.toFixed(1)}%${span}`;
   const reset = countdown(window.resetAt);
   const detail = [
     // Clamped at zero like the card: an overdrawn allowance says "nothing
@@ -397,8 +400,8 @@ function readLocalCatalog() {
  */
 async function refreshCatalogOnce(planId, timeoutMs) {
   try {
-    // 这一跳是最慢的一跳：两个页面各要一次（HEAD + GET），默认每页 20 秒，
-    // 网关不理 HEAD 时最坏 4×20s。调用方必须能给它一个上限。
+    // 这一跳是最慢的一跳：两个页面的探针一起发，正文只在变了才下。
+    // 默认每页 20 秒，最坏是两轮（探针一轮、正文一轮），不是四次串行相加。
     const { changed, failures } = await syncCatalog({ planId, timeoutMs });
     return { changed, failures };
   } catch (error) {
@@ -481,7 +484,7 @@ function catalogHeadLines(view, catalog, context, options) {
   }
   for (const warning of view.warnings) {
     if (warning === 'catalog-bundled-baseline') continue; // 「数据来源」那行已经说了
-    lines.push(`注意  ${warning}`);
+    lines.push(`注意  ${warningText(warning)}`);
   }
   if (view.failures.length > 0) {
     lines.push('降级  以下页面没能核对，数字可能不是最新的：');
@@ -559,6 +562,19 @@ function modelLines(models) {
     }
   }
   return lines;
+}
+
+/** 把目录警告码说成人话。认不出的码原样留下，不吞掉。 */
+function warningText(warning) {
+  if (typeof warning !== 'string') return String(warning ?? '');
+  if (warning.startsWith('catalog-plan-unpublished:')) {
+    return `官方没有 ${warning.slice('catalog-plan-unpublished:'.length)} 这一档的专页，这里只显示套餐级数字`;
+  }
+  if (warning.startsWith('catalog-plan-not-listed:')) {
+    return `本地目录里没有 ${warning.slice('catalog-plan-not-listed:'.length)} 这一档`;
+  }
+  if (warning === 'catalog-plan-missing') return '官方目录里没有这个套餐的条目';
+  return warning;
 }
 
 /** 找套餐级概览里对应的那一行（有的套餐名在概览表里不存在，例如 Ultra）。 */

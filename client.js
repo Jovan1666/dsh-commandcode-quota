@@ -141,7 +141,7 @@ window.__ModuleLoader__.load({
         reset: '{time} 后重置',
         overLimit: '已超限',
         usedOf: '{label}已用',
-        requests: '{count} 请求 · {rate}%',
+        requests: '{count} 次请求 · 成功率 {rate}%',
         tokens: '输入 {in} / 输出 {out}',
         balance: '额外额度',
         belowThreshold: '额度已低于阈值',
@@ -157,6 +157,17 @@ window.__ModuleLoader__.load({
         errRate: '请求太频繁，稍后自动重试',
         errNotFound: '当前套餐不含 API 权限',
         errGeneric: '读取失败',
+        errMissingKey: '找到了 Command Code，但没有读到 API key',
+        cdMin: '{n}分',
+        cdHour: '{h}时{m}分',
+        cdDay: '{d}天{h}时',
+        ageUnder: '不到1分',
+        ageMin: '{n}分',
+        ageHour: '{n}时',
+        ageDay: '{n}天',
+        railFiveHour: '5时',
+        railWeekly: '周',
+        railMonthly: '月',
 
         // Settings-panel section: the plan-level overview, the per-model table,
         // the sidebar card's own switch, and every line that qualifies them.
@@ -179,16 +190,18 @@ window.__ModuleLoader__.load({
         basis: '换算基准：一次请求约 输入 {in} / 输出 {out} / 缓存读 {cache} tokens。',
         inferred: '官方没有这一档的专页，按 {from} 的数据推断。',
         colModel: '模型',
-        colMonthly: '每月',
-        colFiveHour: '5 小时',
-        colWeek: '每周',
+        colMonthly: '每月（次）',
+        colFiveHour: '5 小时（次）',
+        colWeek: '每周（次）',
+        inUse: '在用',
+        derivedShort: '推算',
         notGiven: '官方未给',
         dashNote: '「—」表示官方没有公布这个模型的次数，不是 0 次。',
         freeNote: '「Free」是官方标注的免费/不限量，不是我们算出来的数字。',
         derivedNote: '按官方 provider 默认形状推算',
         peak: '峰时：每月 {monthly} · 5 小时 {fiveHour} · 每周 {week}',
         requestsFallback: '约 {count} 次请求',
-        expand: '展开全部 {count} 个模型',
+        expand: '展开其余 {count} 个模型',
         collapse: '收起，只看你配置的模型',
         noConfigured: '没能识别出你配置的模型，下面是这个套餐的全部 {count} 个模型。',
         coverage: '官方次数表覆盖 {published} 个模型，这个套餐可用 {available} 个。',
@@ -198,6 +211,7 @@ window.__ModuleLoader__.load({
         statusStale: '已超过 24 小时未核对（上次核对 {time}）。',
         statusChecked: '上次核对 {time}。',
         statusSyncing: '正在后台核对官方数据…（页面先显示本地已有的一份）',
+        statusSyncSlow: '核对还没回来，下面仍是本地数字。可以再点「检查更新」。',
         statusUpdated: '官方数据更新于 {time}。',
         fetchModeHash: '本机用不了官方的 HEAD 校验，改用整篇比对（仍然只在内容变了时重新解析）。',
         failureHead: '{count} 项这次没核对成功：',
@@ -207,6 +221,7 @@ window.__ModuleLoader__.load({
         docLink: '查看官方套餐与限额文档',
         warnPlanMissing: '官方目录里没有这个套餐的条目。',
         warnPlanNotListed: '官方目录里没有 {planId} 这一档。',
+        warnPlanUnpublished: '官方没有 {planId} 这一档的专页，这里只显示套餐级数字。',
       },
       en: {
         fiveHour: '5-hour',
@@ -218,7 +233,7 @@ window.__ModuleLoader__.load({
         reset: 'resets in {time}',
         overLimit: 'over limit',
         usedOf: '{label} used',
-        requests: '{count} requests · {rate}%',
+        requests: '{count} requests · {rate}% success',
         tokens: 'in {in} / out {out}',
         balance: 'Extra credit',
         belowThreshold: 'credit is below the configured threshold',
@@ -234,6 +249,17 @@ window.__ModuleLoader__.load({
         errRate: 'too many requests; retrying shortly',
         errNotFound: 'this plan has no API access',
         errGeneric: 'could not read the account',
+        errMissingKey: 'Command Code is configured, but no API key could be read',
+        cdMin: '{n}m',
+        cdHour: '{h}h {m}m',
+        cdDay: '{d}d {h}h',
+        ageUnder: '<1m',
+        ageMin: '{n}m',
+        ageHour: '{n}h',
+        ageDay: '{n}d',
+        railFiveHour: '5h',
+        railWeekly: 'Wk',
+        railMonthly: 'Mo',
 
         // Settings-panel section; see the zh block for the reasoning.
         nav: 'Quota & card',
@@ -249,16 +275,18 @@ window.__ModuleLoader__.load({
         basis: 'Basis: one request ≈ {in} in / {out} out / {cache} cache-read tokens.',
         inferred: 'There is no official page for this tier; these numbers are inferred from the {from} data.',
         colModel: 'Model',
-        colMonthly: 'Monthly',
-        colFiveHour: '5-hour',
-        colWeek: 'Weekly',
+        colMonthly: 'Monthly (calls)',
+        colFiveHour: '5-hour (calls)',
+        colWeek: 'Weekly (calls)',
+        inUse: 'in use',
+        derivedShort: 'estimated',
         notGiven: 'not published',
         dashNote: '“—” means the official table publishes no figure for this model. It does not mean zero.',
         freeNote: '“Free” is the site’s own wording for a free/unlimited model, not a number we computed.',
         derivedNote: 'derived from the provider default shape',
         peak: 'Peak: {monthly} monthly · {fiveHour} 5-hour · {week} weekly',
         requestsFallback: '~{count} requests',
-        expand: 'Show all {count} models',
+        expand: 'Show the other {count} models',
         collapse: 'Collapse to your configured models',
         noConfigured: 'Could not tell which models you configured, so all {count} models on this plan are shown.',
         coverage: 'The official table covers {published} models; {available} are available on this plan.',
@@ -268,6 +296,7 @@ window.__ModuleLoader__.load({
         statusStale: 'Not checked for more than 24 hours (last check {time}).',
         statusChecked: 'Last checked {time}.',
         statusSyncing: 'Checking the official data in the background… (showing the local copy meanwhile)',
+        statusSyncSlow: 'The check has not come back. The numbers below are still the local copy — press Check for updates to try again.',
         statusUpdated: 'Official data updated {time}.',
         fetchModeHash: 'This machine cannot use the site’s HEAD check, so the host compares whole documents (it still re-parses only when the content changed).',
         failureHead: '{count} item(s) failed this check:',
@@ -277,6 +306,7 @@ window.__ModuleLoader__.load({
         docLink: 'View the official plans and limits docs',
         warnPlanMissing: 'The official catalog has no entry for this plan.',
         warnPlanNotListed: 'The official catalog has no {planId} tier.',
+        warnPlanUnpublished: 'The vendor publishes no page for {planId}; only the plan-level figure is shown.',
       },
     }
 
@@ -329,8 +359,11 @@ window.__ModuleLoader__.load({
 .ccq-link:hover{text-decoration:underline}
 .ccq-error{font-size:12px;line-height:18px;color:var(--dsw-alias-state-error-primary)}
 .ccq-rail{box-sizing:border-box;width:36px;height:36px;border-radius:50%;display:flex;
-  align-items:center;justify-content:center;font-size:12px;font-weight:600;
-  font-variant-numeric:tabular-nums;border:none;background:transparent}
+  flex-direction:column;align-items:center;justify-content:center;
+  font-variant-numeric:tabular-nums;border:1.5px solid transparent;background:transparent;line-height:1}
+.ccq-rail-pct{font-size:11px;font-weight:600;color:var(--dsw-alias-label-primary)}
+.ccq-rail-key{margin-top:1px;font-size:9px;font-weight:500;line-height:10px;color:var(--dsw-alias-label-tertiary)}
+.ccq-rail.ccq-stale{opacity:.62}
 /* --- settings section ---
    The sidebar card's rules above are sized for a 200px column. The settings
    panel is wide with 24px padding, so this block sets its own scale and caps
@@ -464,28 +497,46 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
       return `${pad(target.getMonth() + 1)}-${pad(target.getDate())} ${pad(target.getHours())}:${pad(target.getMinutes())}`
     }
 
-    /** Terse countdown for the row chip: `59m`, `3h25m`, `6d9h`. */
-    function shortCountdown(timestamp) {
+    /**
+     * Terse countdown for the row chip.
+     *
+     * The chip is only the duration (`59分`, `3时05分`, `6天9时`). The words
+     * "resets in" live on the tooltip: in a 200px row they used to push the
+     * percentage — the number the card exists to show — off the row. Minutes
+     * next to hours are zero-padded so `3时05分` cannot be read as 35.
+     *
+     * @param timestamp - reset instant, epoch milliseconds.
+     * @param t - the card's translator.
+     * @returns the chip text, or undefined when there is nothing to count.
+     */
+    function shortCountdown(timestamp, t) {
       if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) return undefined
       // A reset instant that has already passed leaves nothing to count down to.
-      // `0m 后重置` beside unmoving numbers reads as a frozen card, so the chip
-      // goes away; the tooltip still carries the absolute instant.
+      // `0分` beside unmoving numbers reads as a frozen card, so the chip goes
+      // away; the tooltip still carries the absolute instant.
       const minutes = Math.floor((timestamp - Date.now()) / 60_000)
       if (minutes <= 0) return undefined
-      if (minutes < 60) return `${minutes}m`
+      if (minutes < 60) return format(t('cdMin'), { n: String(minutes) })
       const hours = Math.floor(minutes / 60)
-      if (hours < 24) return `${hours}h${minutes % 60}m`
-      return `${Math.floor(hours / 24)}d${hours % 24}h`
+      if (hours < 24) {
+        return format(t('cdHour'), { h: String(hours), m: String(minutes % 60).padStart(2, '0') })
+      }
+      return format(t('cdDay'), { d: String(Math.floor(hours / 24)), h: String(hours % 24) })
     }
 
-    /** Coarse age of a timestamp, for the stale marker. */
-    function ageOf(timestamp) {
+    /**
+     * Coarse age of a timestamp, for the stale marker.
+     * @param timestamp - epoch milliseconds.
+     * @param t - the card's translator.
+     */
+    function ageOf(timestamp, t) {
       if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) return undefined
       const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60_000))
-      if (minutes < 1) return '<1m'
-      if (minutes < 60) return `${minutes}m`
+      if (minutes < 1) return t('ageUnder')
+      if (minutes < 60) return format(t('ageMin'), { n: String(minutes) })
       const hours = Math.floor(minutes / 60)
-      return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`
+      if (hours < 24) return format(t('ageHour'), { n: String(hours) })
+      return format(t('ageDay'), { n: String(Math.floor(hours / 24)) })
     }
 
     /**
@@ -590,7 +641,7 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
         RATE_LIMIT: 'errRate',
         NOT_FOUND: 'errNotFound',
         BAD_RESPONSE: 'errGeneric',
-        MISSING_CREDENTIAL: 'errGeneric',
+        MISSING_CREDENTIAL: 'errMissingKey',
       }
       const key = keys[code]
       return key === undefined ? String(message ?? '') : t(key)
@@ -768,18 +819,21 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
     function WindowRow({ row, t }) {
       const percent = percentOf(row.percent)
       const color = levelToken(percent)
-      const countdown = shortCountdown(row.resetAt)
+      // Exceeded windows say so instead of counting down: a countdown beside a
+      // spent bar answers a question the red 100% already closed.
+      const countdown = row.exceeded ? undefined : shortCountdown(row.resetAt, t)
       const tips = [
         row.capSuspect ? t('straddle') : undefined,
         !row.capSuspect && row.used !== undefined && row.cap !== undefined
           ? `${format(t('usedOf'), { label: t(row.label) })} ${money(row.used)} / ${money(row.cap)}`
           : undefined,
         !row.capSuspect && row.remaining !== undefined ? `${t('left')} ${money(row.remaining)}` : undefined,
-        // The exact reset instant stays one hover away even though the row chip
-        // only carries the countdown.
+        // "resets in" stays on the hover. The chip itself is only the duration,
+        // which is what fits beside the percentage.
+        countdown === undefined ? undefined : format(t('reset'), { time: countdown }),
         row.resetAt === undefined ? undefined : when(row.resetAt),
       ].filter((part) => part !== undefined)
-      const chip = row.exceeded ? t('overLimit') : countdown === undefined ? undefined : format(t('reset'), { time: countdown })
+      const chip = row.exceeded ? t('overLimit') : countdown
       // Each row carries its own tooltip: exact amounts, remaining credit, and
       // the absolute reset instant, none of which cost a line in the sidebar.
       return h('div', { className: 'ccq-win', title: tips.join(' · ') },
@@ -908,11 +962,21 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
         undefined,
       )
       if (headline === undefined) return null
+      const railKey = headline.key === 'fiveHour' ? 'railFiveHour' : headline.key === 'weekly' ? 'railWeekly' : 'railMonthly'
+      // The fill colours fail contrast as 11px text. The ring carries the level;
+      // the percentage stays in the card's own text colour. Not a button: the
+      // collapsed rail has nowhere for this badge to navigate.
+      const stale = state.phase === 'error' || state.report?.stale === true
       return h('div', {
-        className: 'ccq-rail',
+        className: `ccq-rail${stale ? ' ccq-stale' : ''}`,
         title: summaryTitle(rows, t),
-        style: { color: levelToken(headline.percent) },
-      }, headlinePercent(headline.percent))
+        role: 'img',
+        'aria-label': `${t(headline.label)} ${headlinePercent(headline.percent)}`,
+        style: { borderColor: levelToken(headline.percent) },
+      },
+        h('span', { className: 'ccq-rail-pct' }, headlinePercent(headline.percent)),
+        h('span', { className: 'ccq-rail-key' }, t(railKey)),
+      )
     }
 
     /** The sidebar-foot card. */
@@ -992,7 +1056,7 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
           h('span', { className: `ccq-chevron${open ? ' ccq-open' : ''}` }, '▾'),
         ),
         ...body,
-        stale ? h('div', { className: 'ccq-note' }, format(t('stale'), { age: ageOf(staleAt) ?? '—' })) : null,
+        stale ? h('div', { className: 'ccq-note' }, format(t('stale'), { age: ageOf(staleAt, t) ?? '—' })) : null,
         open && report !== undefined ? h('div', { className: 'ccq-detail' }, ...detailRows(report, rows, t)) : null,
       )
     }
@@ -1164,6 +1228,15 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
                 syncingStreak = running ? syncingStreak + 1 : 0
                 if (running && syncingStreak <= SYNCING_MAX_TRIES) {
                   timer = window.setTimeout(read, SYNCING_MS)
+                } else if (running) {
+                  // Stopped asking. Leave the button usable: a check that outlives
+                  // this wait is still the thing "检查更新" is for, and a disabled
+                  // button on a page that will never hear the result is a trap.
+                  setState((previous) => {
+                    const catalog = previous.catalog
+                    if (catalog === undefined || catalog === null) return previous
+                    return { ...previous, catalog: { ...catalog, syncing: false, syncSlow: true } }
+                  })
                 }
               },
               (error) => {
@@ -1270,6 +1343,9 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
       if (code.startsWith('catalog-plan-not-listed:')) {
         return format(t('warnPlanNotListed'), { planId: code.slice('catalog-plan-not-listed:'.length) })
       }
+      if (code.startsWith('catalog-plan-unpublished:')) {
+        return format(t('warnPlanUnpublished'), { planId: code.slice('catalog-plan-unpublished:'.length) })
+      }
       // An unrecognised code is still a fact; show it rather than swallow it.
       return code
     }
@@ -1287,6 +1363,8 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
       // themselves in a moment.
       if (catalog.syncing === true) {
         lines.push({ key: 'syncing', tone: 'note', text: t('statusSyncing') })
+      } else if (catalog.syncSlow === true) {
+        lines.push({ key: 'sync-slow', tone: 'note', text: t('statusSyncSlow') })
       }
       const checked = whenValue(catalog.checkedAt)
       if (catalog.origin === 'bundled' || catalog.verified !== true) {
@@ -1363,8 +1441,9 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
       return h('tr', { title: tips.length === 0 ? undefined : tips.join(' · ') },
         h('th', { scope: 'row', className: 'ccq-model' },
           name,
+          model?.configured === true ? h('span', { className: 'ccq-tag' }, t('inUse')) : null,
           noCount(model) ? h('span', { className: 'ccq-tag' }, t('notGiven')) : null,
-          model.derived === true ? h('span', { className: 'ccq-tag', title: t('derivedNote') }, t('derivedNote')) : null,
+          model.derived === true ? h('span', { className: 'ccq-tag', title: t('derivedNote') }, t('derivedShort')) : null,
         ),
         h('td', { className: 'ccq-num' }, formatCount(countOf(model, 'monthly'))),
         h('td', { className: 'ccq-num' }, formatCount(countOf(model, 'fiveHour'))),
@@ -1545,7 +1624,7 @@ button:has(.ccq-navmark)>svg:first-child{display:none}
             className: 'ccq-fold',
             'aria-expanded': expanded,
             onClick: () => setExpanded((value) => !value),
-          }, expanded ? t('collapse') : format(t('expand'), { count: rows.length })) : null,
+          }, expanded ? t('collapse') : format(t('expand'), { count: String(rows.length - configured.length) })) : null,
           visible.some(noCount) ? h('div', { key: 'dash', className: 'ccq-note' }, t('dashNote')) : null,
           visible.some((model) => model?.free === true)
             ? h('div', { key: 'free', className: 'ccq-note' }, t('freeNote'))

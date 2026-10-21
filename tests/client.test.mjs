@@ -265,9 +265,9 @@ console.log('window order and percentage-first values')
   check('each row carries its own reset chip', () => {
     const chips = [...html.matchAll(/class="ccq-reset">([^<]*)</g)].map((match) => match[1])
     assert.equal(chips.length, 3)
-    assert.match(chips[0], /^\d+h\d+m 后重置$/, `5-hour chip was ${chips[0]}`)
-    assert.match(chips[1], /^\d+d\d+h 后重置$/, `weekly chip was ${chips[1]}`)
-    assert.match(chips[2], /^\d+d\d+h 后重置$/, `monthly chip was ${chips[2]}`)
+    assert.match(chips[0], /^\d+时\d+分$/, `5-hour chip was ${chips[0]}`)
+    assert.match(chips[1], /^\d+天\d+时$/, `weekly chip was ${chips[1]}`)
+    assert.match(chips[2], /^\d+天\d+时$/, `monthly chip was ${chips[2]}`)
   })
   check('the warning band applies between 60% and 85%', () => {
     const warn = renderReady({ ...GOAT, fiveHour: { ...GOAT.fiveHour, used: 10, cap: 14, percent: 71.4 } })
@@ -301,7 +301,7 @@ console.log('plan-agnostic rendering')
     const detail = html.slice(html.indexOf('ccq-detail'))
     assert.match(detail, /月度已用<\/span><span[^>]*>\$68\.89 \/ \$70\.21</)
     assert.match(detail, /剩余<\/span><span[^>]*>\$1\.32</)
-    assert.match(detail, /17,859 请求 · 100%/)
+    assert.match(detail, /17,859 次请求 · 成功率 100%/)
     assert.match(detail, /输入 3\.34B \/ 输出 16\.32M/)
   })
   check('remaining credit carries the monthly urgency colour', () => {
@@ -361,7 +361,8 @@ console.log('values that move')
     // suite would flake once in a while.
     const soon = renderReady({ ...GOAT, fiveHour: { ...GOAT.fiveHour, resetAt: Date.now() + 59.5 * 60_000 } })
     const passed = renderReady({ ...GOAT, fiveHour: { ...GOAT.fiveHour, resetAt: Date.now() - 90_000 } })
-    assert.match(soon, /59m 后重置/)
+    assert.match(soon, /59分/)
+    assert.match(soon, /59分 后重置/)
     const firstRow = (html) => {
       const start = html.indexOf('ccq-win"')
       return html.slice(start, html.indexOf('ccq-win"', start + 1))
@@ -377,9 +378,9 @@ console.log('values that move')
       const html = renderReady({ ...GOAT, fiveHour: { ...GOAT.fiveHour, resetAt: Date.now() + minutes * 60_000 } })
       return [...html.matchAll(/class="ccq-reset">([^<]*)</g)].map((match) => match[1])[0]
     }
-    assert.equal(at(59.4), '59m 后重置', 'four seconds left of the minute is not a minute more')
-    assert.equal(at(60.5), '1h0m 后重置', 'and the hour rolls over exactly once')
-    assert.equal(at(61.5), '1h1m 后重置')
+    assert.equal(at(59.4), '59分', 'four seconds left of the minute is not a minute more')
+    assert.equal(at(60.5), '1时00分', 'and the hour rolls over exactly once')
+    assert.equal(at(61.5), '1时01分')
   })
 
   check('an exceeded window says so, and its percentage is clamped', () => {
@@ -500,7 +501,7 @@ console.log('values that move')
     const html = renderReady({ ...GOAT, stale: true, staleAgeMs: 45_000 })
     assert.match(html, /ccq-stale/)
     assert.deepEqual(percentagesIn(html), ['16%', '7%', '98%'])
-    assert.match(html, /上次成功：45m?前|<1m前|0m前|\d+m前/)
+    assert.match(html, /上次成功：不到1分前/)
   })
 
   check('a live report is never dimmed', () => {
@@ -632,13 +633,15 @@ console.log('states')
     const html = renderCard([false, { phase: 'error', message: 'network', report: GOAT, at: Date.now() - 120_000 }])
     assert.match(html, /ccq-stale/)
     assert.deepEqual(percentagesIn(html), ['16%', '7%', '98%'])
-    assert.match(html, /上次成功：2m前/)
+    assert.match(html, /上次成功：2分前/)
   })
   check('collapsed sidebar badges the most constrained window, not the shortest', () => {
     const rail = renderCard([false, { phase: 'ready', report: GOAT }], { wide: false })
     assert.match(rail, /ccq-rail/)
     assert.match(rail, /98%/)
+    assert.match(rail, /ccq-rail-key[^>]*>月</)
     assert.doesNotMatch(rail, /ccq-card/)
+    assert.doesNotMatch(rail, /ccq-rail-pct[^>]*style=/)
   })
   check('the rail badge stays hidden for a host without Command Code', () => {
     assert.equal(renderCard([false, { phase: 'absent' }], { wide: false }), '')
@@ -869,6 +872,28 @@ console.log('the settings section follows a background check')
     assert.ok(rpcCalls.length > 1, 'the section never came back for the running check at all')
     assert.ok(rpcCalls.length <= 10, `the section asked ${rpcCalls.length} times: that is a poll, not a wait`)
     assert.deepEqual([...new Set(delays)], [2_000], `the cadence must not drift: ${JSON.stringify(delays)}`)
+  })
+
+  await checkAsync('giving up on a long check re-enables the update button', async () => {
+    const pending = []
+    const { render } = mountSection({
+      answer: () => ({ catalog: view(true) }),
+      onSetTimeout: (fn) => { pending.push(fn) },
+    })
+    render()
+    await new Promise((resolve) => { setTimeout(resolve, 5) })
+    let fired = 0
+    while (pending.length > 0 && fired < 20) {
+      pending.shift()()
+      // eslint-disable-next-line no-await-in-loop -- the loop is the timeline
+      await new Promise((resolve) => { setTimeout(resolve, 5) })
+      fired += 1
+    }
+    const html = render()
+    assert.match(html, /statusSyncSlow/)
+    const at = html.indexOf('ccq-refresh')
+    assert.ok(at > 0, 'the update button disappeared')
+    assert.doesNotMatch(html.slice(at - 160, at + 30), /disabled/, 'the button stayed disabled after the section stopped waiting')
   })
 
   await checkAsync('a first read that fails renders its error instead of throwing', async () => {

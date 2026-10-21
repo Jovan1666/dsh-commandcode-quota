@@ -832,7 +832,7 @@ console.log('a catalog check that found nothing does not repeat itself')
     assert.equal(first.value.catalog.syncing, true, 'the first read must report that a check started')
     assert.ok(afterFirst >= 2, `expected both pages to be probed once, saw ${afterFirst}`)
     assert.equal(docsRequests, afterFirst, 'the very next mount re-sent the whole round')
-    assert.equal(second.value.catalog.syncing, true)
+    assert.equal(second.value.catalog.syncing, false, 'a quiet backoff is not a check that is still running')
   })
 
   // And the failure is recorded rather than silently swallowed: the panel has to
@@ -896,6 +896,59 @@ console.log('the sidebar card is the user’s choice, and the host remembers it'
   const afterJunkValue = await callRoute(seen.route, 'cc-quota/report', {})
   check('only an explicit false hides the card', () => {
     assert.equal(afterJunkValue.value.cardVisible, true)
+  })
+}
+
+console.log('a failed live read stops standing in for the snapshot')
+{
+  const home = isolatedHome()
+  const snapshotFile = path.join(home, 'dsh-commandcode-quota', 'last-report.json')
+  const plugin = await loadHostHalf()
+  mkdirSync(path.dirname(snapshotFile), { recursive: true })
+  writeFileSync(snapshotFile, JSON.stringify({
+    version: 1,
+    fingerprint: credentialFingerprint(),
+    report: {
+      fetchedAt: new Date(Date.now() - 45_000).toISOString(),
+      plan: { planId: 'individual-goat', name: 'GOAT', status: 'active' },
+      monthly: { used: 66.1, remaining: 4.1, cap: 70.2, percent: 94.2, capSuspect: false },
+      failures: [],
+    },
+  }), 'utf8')
+  globalThis.fetch = () => Promise.reject(new Error('offline'))
+  const { ctx, seen } = makeCtx()
+  plugin.apply(ctx)
+  const first = await callRoute(seen.route, 'cc-quota/report', {})
+  const second = await callRoute(seen.route, 'cc-quota/report', {})
+  check('the first paint is still the snapshot', () => {
+    assert.equal(first.ok, true)
+    assert.equal(first.value.stale, true)
+    assert.equal(first.value.monthly.used, 66.1)
+  })
+  check('the next answer is the failure, not the same snapshot again', () => {
+    assert.equal(second.ok, false)
+    assert.match(second.error.message, /\[NETWORK\]/)
+  })
+}
+
+console.log('the switch survives a quota read that failed')
+{
+  const home = isolatedHome()
+  globalThis.fetch = () => Promise.reject(new Error('offline'))
+  const plugin = await loadHostHalf()
+  const { ctx, seen } = makeCtx()
+  plugin.apply(ctx)
+  const prefFile = path.join(home, 'dsh-commandcode-quota', 'settings.json')
+  const off = await callRoute(seen.route, 'cc-quota/report', { cardVisible: false, catalog: true })
+  check('a stored switch is confirmed even when the account cannot be read', () => {
+    assert.equal(off.ok, true)
+    assert.equal(off.value.cardVisible, false)
+    assert.equal(JSON.parse(readFileSync(prefFile, 'utf8')).cardVisible, false)
+  })
+  const polled = await callRoute(seen.route, 'cc-quota/report', {})
+  check('a later poll still reports the quota failure', () => {
+    assert.equal(polled.ok, false)
+    assert.match(polled.error.message, /\[NETWORK\]/)
   })
 }
 

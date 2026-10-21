@@ -1128,6 +1128,28 @@ console.log('resolveCatalogView is a local read')
     }
     assert.equal(calls, 0)
   })
+  check('an empty failed cache still shows the bundled baseline', () => {
+    const file = tmpFile('resolve-empty.json')
+    catalog.writeCatalogAtomic({
+      kind: catalog.CATALOG_KIND,
+      version: catalog.CATALOG_VERSION,
+      schema: catalog.CATALOG_SCHEMA,
+      noData: true,
+      plans: {},
+      failures: [{ code: 'CATALOG_NETWORK', url: 'https://commandcode.ai/docs', message: 'offline' }],
+      checkedAt: new Date(NOW).toISOString(),
+    }, { file })
+    const result = catalog.resolveCatalogView({ file, env: {}, planId: 'individual-goat', now: NOW })
+    assert.equal(result.origin, 'bundled')
+    assert.equal(result.verified, false)
+    assert.ok(result.models.length > 0, 'the failed cache hid the bundled models')
+    assert.equal(result.failures.length, 1)
+    assert.equal(result.failures[0].code, 'CATALOG_NETWORK')
+    assert.equal(
+      result.warnings.some((code) => String(code).startsWith('catalog-plan-not-listed:')),
+      false,
+    )
+  })
   check('and it hands back a plain view, not a promise', () => {
     const file = tmpFile('resolve-sync.json')
     catalog.writeCatalogAtomic(catalog.readCatalogCache({ file: viewFile }), { file })
@@ -1296,6 +1318,21 @@ console.log('a plan the vendor never published a page for')
   })
   check('the panel is told the vendor publishes nothing for this tier', () => {
     assert.ok(unpublishedView.warnings.includes('catalog-plan-unpublished:individual-provider'))
+    assert.equal(
+      unpublishedView.warnings.some((code) => String(code).startsWith('catalog-plan-not-listed:')),
+      false,
+      'an unpublished tier must not also be described as missing from the catalog',
+    )
+  })
+  check('a failed empty check does not retry just because the plan is absent', () => {
+    assert.equal(
+      catalog.needsRevalidate({ catalog: noCache, planId: 'individual-goat', now: NOW + HOUR }),
+      false,
+    )
+    assert.equal(
+      catalog.needsRevalidate({ catalog: noCache, planId: 'individual-goat', now: NOW + catalog.CATALOG_MIN_RETRY_MS }),
+      true,
+    )
   })
 }
 

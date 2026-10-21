@@ -61,6 +61,7 @@ console.log('route discovery')
     assert.equal(routes[0].baseURL, 'https://api.commandcode.ai/provider/v1')
     assert.equal(routes[0].keyRef, 'MY_CUSTOM_KEY')
     assert.equal(routes[0].apiKey, undefined)
+    assert.deepEqual(routes[0].models, ['deepseek/deepseek-v4-flash'])
   })
   check('ignores routes pointing somewhere else', () => {
     const routes = discoverRoutes(`llm-pi-ai:
@@ -88,6 +89,31 @@ console.log('route discovery')
 `)
     assert.equal(routes.length, 1)
     assert.equal(routes[0].keyRef, 'REAL_KEY')
+    assert.deepEqual(routes[0].models, ['a/b'])
+  })
+  check('a sibling key between baseURL and models does not drop the models', () => {
+    const routes = discoverRoutes(`llm-pi-ai:
+  providers:
+    cc:
+      baseURL: https://api.commandcode.ai/provider/v1
+      apiKeyEnv: MY_KEY
+      models:
+        - id: deepseek/deepseek-v4.1-flash
+          name: Flash
+`)
+    assert.deepEqual(routes[0].models, ['deepseek/deepseek-v4.1-flash'])
+    assert.equal(routes[0].keyRef, 'MY_KEY')
+  })
+  check('models listed before baseURL still count', () => {
+    const routes = discoverRoutes(`llm-pi-ai:
+  providers:
+    cc:
+      models:
+        - id: deepseek/deepseek-v4.1-pro
+      apiKeyEnv: MY_KEY
+      baseURL: https://api.commandcode.ai/provider/v1
+`)
+    assert.deepEqual(routes[0].models, ['deepseek/deepseek-v4.1-pro'])
   })
   check('a later sibling route terminates the previous block', () => {
     const routes = discoverRoutes(`llm-pi-ai:

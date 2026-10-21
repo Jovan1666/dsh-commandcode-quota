@@ -901,14 +901,17 @@ export function needsRevalidate({ catalog, planId, now = Date.now(), ttlMs = CAT
   const failing = (Array.isArray(catalog.failures) && catalog.failures.length > 0)
     // 上一次核对一个包都没换成：内容没有落盘，`failures` 就无处可记（见 syncCatalog
     // 的 noData 分支），这时也必须走最短间隔，否则没有缓存的机器每次挂载都会重发
-    // 一整轮请求（断网时每轮最长 4×20s 的超时叠加）。
+    // 一整轮请求（断网时是两轮探针，每轮不超过单页超时）。
     || catalog.noData === true;
   // 这一档官方根本没有页面（Provider / Teams Pro）：再问一万次也不会有。它算
   // 「问过了、没有」，所以只按 TTL 复核，而不是每次调用都重试。
   const unpublished = Array.isArray(catalog.unpublished) && catalog.unpublished.includes(planId);
   if (!unpublished && planId !== undefined && catalog.plans?.[planId] === undefined) {
-    // 换了套餐（或第一次拿到 planId）而本地没有这一档：立刻补一次，别等满 TTL。
-    return true;
+    // 一次什么都没换成的核对（断网、首次失败）已经试过了。它没有这一档，是因为
+    // 整份目录是空的，不是因为用户刚换了套餐。按失败间隔退避，否则设置页会每
+    // 几秒再打一轮，并且用这份空缓存把内置基线盖掉。
+    const emptyAttempt = catalog.noData === true || Object.keys(catalog.plans ?? {}).length === 0;
+    if (!emptyAttempt) return true;
   }
   return now - checked >= (failing ? minRetryMs : ttlMs);
 }
@@ -1099,7 +1102,7 @@ export async function syncCatalog(config = {}) {
     fetchMode: usedHashMode ? 'hash' : 'etag',
     // 一个包都没换成时**照样落盘**：这份文件存在的意义就是记住「刚才试过了、
     // 结果是这些失败」，让 needsRevalidate 的最短间隔生效。不落盘的话，没有缓存的
-    // 机器每次挂载都要重发一整轮请求（断网时每轮最长 4×20s 的超时叠加）。
+    // 机器每次挂载都要重发一整轮请求（断网时是两轮探针，每轮不超过单页超时）。
     noData: !hasData,
     // 官方没有页面的档位：记住它是「问过了、没有」，不是「还没问」。
     unpublished: [...new Set([
@@ -1125,15 +1128,34 @@ export async function syncCatalog(config = {}) {
  */
 export function resolveCatalogView(options = {}) {
   const cached = options.catalog ?? readCatalogCache(options);
-  const catalog = cached ?? readCatalogSeed(options);
-  return catalogView({
-    catalog,
-    bundled: cached === undefined,
+  // 第一次核对失败会落一份空目录，只为了记住「刚才试过了」。它不能挡住内置基线：
+  // 否则离线打开设置页，次数表变成「官方目录里没有这个套餐」。
+  const cacheEmpty = cached !== undefined && (
+    cached.noData === true || Object.keys(cached.plans ?? {}).length === 0
+  );
+  // `options.file` is the cache path. The seed lives at its own path; handing
+  // the cache file to the seed reader would treat a failed check as the baseline.
+  const seedOptions = { ...options };
+  delete seedOptions.file;
+  delete seedOptions.catalog;
+  const seed = cached === undefined || cacheEmpty ? readCatalogSeed(seedOptions) : undefined;
+  const useSeed = (cached === undefined || cacheEmpty) && seed !== undefined;
+  const view = catalogView({
+    catalog: useSeed ? seed : cached,
+    bundled: useSeed,
     planId: options.planId,
     configuredModels: options.configuredModels ?? [],
     now: options.now ?? Date.now(),
     ttlMs: resolveCatalogTtlMs(options),
   });
+  if (useSeed && cached !== undefined) {
+    view.failures = Array.isArray(cached.failures) ? cached.failures : view.failures;
+    const planId = options.planId;
+    if (planId !== undefined && seed?.plans?.[planId] !== undefined) {
+      view.warnings = view.warnings.filter((code) => !String(code).startsWith('catalog-plan-not-listed:'));
+    }
+  }
+  return view;
 }
 
 /**
@@ -1186,13 +1208,13 @@ export function catalogView({ catalog, bundled, planId, configuredModels = [], n
   const checkedAt = catalog.checkedAt;
   const age = typeof checkedAt === 'string' ? now - Date.parse(checkedAt) : Number.POSITIVE_INFINITY;
   const warnings = [];
-  if (entry === undefined && planId !== undefined) {
+  const unpublishedTier = planId !== undefined && Array.isArray(catalog.unpublished) && catalog.unpublished.includes(planId);
+  // 未发布的档位只有「官方没有专页」这一句。再叠一条「目录里没有这一档」会让
+  // Provider / Teams 看起来像插件漏了数据。
+  if (entry === undefined && planId !== undefined && !unpublishedTier) {
     warnings.push(catalog.plans?.[planId] === undefined ? `catalog-plan-not-listed:${planId}` : 'catalog-plan-missing');
   }
-  // 官方没有页面的档位：说清楚是「官方没发布」，而不是「我们还没取到」。
-  if (planId !== undefined && Array.isArray(catalog.unpublished) && catalog.unpublished.includes(planId)) {
-    warnings.push(`catalog-plan-unpublished:${planId}`);
-  }
+  if (unpublishedTier) warnings.push(`catalog-plan-unpublished:${planId}`);
   if (bundled === true) warnings.push('catalog-bundled-baseline');
 
   const models = [];

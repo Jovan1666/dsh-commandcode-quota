@@ -188,7 +188,8 @@ function readPreferences() {
  * the same reason the snapshot is: a second reader never sees half a file.
  *
  * @param patch - the preference fields to change.
- * @returns the preferences as they now stand.
+ * @returns `{ saved, preferences }`. `saved` is false when the file could not
+ *   be written; `preferences` is what a later read will actually return.
  */
 function writePreferences(patch) {
   const next = { version: 1, ...readPreferences(), ...patch }
@@ -198,10 +199,12 @@ function writePreferences(patch) {
     const temp = `${file}.${process.pid}.tmp`
     writeFileSync(temp, `${JSON.stringify(next, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
     renameSync(temp, file)
+    return { saved: true, preferences: next }
   } catch {
-    // Ignored on purpose: see above.
+    // A read-only home cannot remember the switch. The caller must say so:
+    // pretending the write landed is what makes the switch snap back later.
+    return { saved: false, preferences: readPreferences() }
   }
-  return next
 }
 
 /**
@@ -384,6 +387,18 @@ export function apply(ctx) {
   let inFlight
 
   /**
+   * Whether this process has already seen one upstream read settle.
+   *
+   * The disk snapshot is only a first paint. Once a read has succeeded or
+   * failed, later polls must report that outcome: serving the snapshot again
+   * whenever `cache` is empty would hide a dead key or a downed API behind
+   * yesterday's percentages for as long as the snapshot file is young.
+   *
+   * @type {boolean}
+   */
+  let readSettled = false
+
+  /**
    * The catalog sync in progress, if any.
    *
    * The catalog is a second, slow-moving dataset: what each model in the plan can
@@ -442,7 +457,10 @@ export function apply(ctx) {
     let cached = readCatalogCache()
     const now = Date.now()
     const due = (check || refresh) && needsRevalidate({ catalog: cached, planId, ttlMs })
-    const gated = due && catalogInFlight === undefined && now < catalogRetryAt
+    // An explicit refresh is the user pressing the button. The gate exists to
+    // stop the panel's own poll from restorming a docs host that just failed,
+    // which is why a refresh does not consult it — see CATALOG_RETRY_GATE_MS.
+    const gated = !refresh && due && catalogInFlight === undefined && now < catalogRetryAt
     if ((due || refresh) && catalogInFlight === undefined && !gated) {
       // Failures are recorded inside the catalog itself, so a rejected promise
       // here has nothing left to report.
@@ -470,7 +488,10 @@ export function apply(ctx) {
     })
     // Tell the browser half a check is running so it can come back in a moment
     // instead of showing a frozen page.
-    return catalogInFlight === undefined && !gated ? view : { ...view, syncing: true }
+    // `syncing` means a check is actually in flight. A quiet backoff is not one:
+    // reporting it as syncing keeps the settings button disabled on a check
+    // nobody is running.
+    return catalogInFlight === undefined ? view : { ...view, syncing: true }
   }
 
   /**
@@ -550,6 +571,8 @@ export function apply(ctx) {
           details: {},
         },
       }
+    } finally {
+      readSettled = true
     }
   }
 
@@ -588,11 +611,16 @@ export function apply(ctx) {
 
     // Start (or join) the refresh either way: the snapshot must never become a
     // reason to stop asking upstream.
-    if (inFlight === undefined) {
+    const starting = inFlight === undefined
+    if (starting) {
       inFlight = fetchOnce().finally(() => { inFlight = undefined })
     }
 
-    if (allowStale && cache === undefined) {
+    // The snapshot answers only the call that *starts* the first read. Anyone
+    // who asks again — the card's 3 s re-check, a second window — joins that
+    // read instead of being handed the same stale file. After the read has
+    // failed, `readSettled` stops the snapshot from standing in forever.
+    if (allowStale && starting && !readSettled && cache === undefined) {
       const fingerprint = currentFingerprint()
       // Only this account's own snapshot: see `currentFingerprint`.
       const belongsHere = fingerprint !== undefined && snapshot !== undefined && snapshot.fingerprint === fingerprint
@@ -643,14 +671,41 @@ export function apply(ctx) {
     // The sidebar card's visibility is the user's choice, made with the settings
     // panel's switch. Writing it here — before the answer is composed — means the
     // answer already reports the new value, so the switch cannot flicker back.
-    if (typeof payload?.cardVisible === 'boolean') writePreferences({ cardVisible: payload.cardVisible })
+    const preferenceWrite = typeof payload?.cardVisible === 'boolean'
+      ? writePreferences({ cardVisible: payload.cardVisible })
+      : undefined
+    // The file could not be written. That is a refused switch, and it has to
+    // look like one: an `ok: true` here would leave the control claiming a
+    // choice the next poll will contradict.
+    if (preferenceWrite?.saved === false) {
+      return failure(rpcId, 'internal', '[PREFERENCE] could not save the sidebar card preference', { issues: [] })
+    }
     // The two reads are independent, so they run at the same time: a cold panel
     // used to pay the quota round trip and the catalog round trips one after the
     // other. Rejection is impossible — `report` converts every failure into an
     // RPC result — but the guard keeps that from being a load-bearing assumption.
     const quotaRead = report({ allowStale: true })
+    /**
+     * Echo a preference that was just stored.
+     *
+     * A quota failure is not a refused write. The switch treats a missing
+     * boolean as "the host said no" and snaps back, which then fights the value
+     * already on disk the next time a read succeeds.
+     *
+     * @param result - the settled quota (and maybe catalog) result.
+     * @returns the HTTP response.
+     */
+    const finish = async (result) => {
+      if (preferenceWrite?.saved === true && result?.ok !== true) {
+        return envelope(rpcId, {
+          ok: true,
+          value: { cardVisible: preferenceWrite.preferences.cardVisible },
+        })
+      }
+      return envelope(rpcId, withPreferences(result))
+    }
     if (!wantsCatalog) {
-      return envelope(rpcId, withPreferences(await quotaRead))
+      return finish(await quotaRead)
     }
     // `withCatalog` inspects the result, so it must be handed the *settled*
     // value: handing it the promise makes its `ok !== true` guard fire and the
@@ -662,7 +717,7 @@ export function apply(ctx) {
       check: payload?.catalog === true,
       refresh: payload?.catalogRefresh === true,
     }).catch(() => result)
-    return envelope(rpcId, withPreferences(catalogRead))
+    return finish(catalogRead)
   }
 
   ctx.effect(() => ctx.connection.fetch.register({

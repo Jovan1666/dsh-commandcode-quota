@@ -348,16 +348,29 @@ export function discoverRoutes(text) {
     for (let back = index - 1; back >= 0 && (lines[back].blank || lines[back].indent >= indent); back -= 1) {
       readSibling(lines[back]);
     }
-    let hasModels = false;
     for (let ahead = index + 1; ahead < lines.length && (lines[ahead].blank || lines[ahead].indent >= indent); ahead += 1) {
       readSibling(lines[ahead]);
-      if (lines[ahead].indent === indent && /^models:\s*$/.test(lines[ahead].trimmed)) hasModels = true;
     }
-    // 这个路由下面挂着哪些模型：`models:` 之后的更深层 `- id: …` 行。
-    // 用户配了哪些模型是「目录里把我自己用的置顶」的依据，只读不写、不参与鉴权。
-    if (hasModels) {
-      for (let ahead = index + 2; ahead < lines.length; ahead += 1) {
-        const candidate = lines[ahead];
+    // 模型名单和 baseURL 是同级字段，顺序不固定：`apiKeyEnv` 常常夹在两者中间，
+    // `models:` 也可能写在 `baseURL` 前面。从 baseURL 的下一行开始数会在第一个
+    // 同级键上停住，于是「你配置的模型」整张表被当成没配过。
+    let modelsAt = -1;
+    const seekModels = (from, step) => {
+      for (let cursor = from; cursor >= 0 && cursor < lines.length; cursor += step) {
+        const candidate = lines[cursor];
+        if (candidate.blank) continue;
+        if (candidate.indent < indent) return;
+        if (candidate.indent === indent && /^models:\s*$/.test(candidate.trimmed)) {
+          modelsAt = cursor;
+          return;
+        }
+      }
+    };
+    seekModels(index + 1, 1);
+    if (modelsAt < 0) seekModels(index - 1, -1);
+    if (modelsAt >= 0) {
+      for (let cursor = modelsAt + 1; cursor < lines.length; cursor += 1) {
+        const candidate = lines[cursor];
         if (candidate.blank) continue;
         if (candidate.indent <= indent) break;
         const id = /^(?:-\s*)?id:\s*["']?([^"'\s]+)["']?/.exec(candidate.trimmed);
