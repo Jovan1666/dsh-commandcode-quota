@@ -24,6 +24,7 @@ const quiet = process.argv.includes('--quiet')
 
 /** Order matters only for readability: cheapest and most isolated first. */
 const SUITES = [
+  { label: 'docs    (bilingual README parity)', file: 'tests/docs.test.mjs' },
   { label: 'quota   (discovery contract)', file: 'tests/quota.test.mjs' },
   { label: 'catalog (docs catalog, change detection)', file: 'tests/catalog.test.mjs' },
   { label: 'host    (route, cache, concurrency)', file: 'tests/host.test.mjs' },

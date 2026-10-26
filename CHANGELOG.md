@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 
 ## [Unreleased] — 2026-10-26
 
+### Added
+
+- **A suite that reads the two READMEs and refuses to let them drift apart** — `tests/docs.test.mjs`, registered in
+  `scripts/verify.mjs` as the `docs` suite (289 → 294 offline checks, 7 → 8 suites). Two paragraphs were corrected
+  in `README.zh-CN.md` while `README.md` kept the old text, and nothing in the repository noticed: every other
+  suite reads code, and "the edit reported success" is not a check. It compares the mechanical half of parity —
+  section count and level sequence, the sequence of code blocks, the set of links, the set of version claims — and
+  it also refuses a check count in either file, because that figure went 244 → 280 → 289 in a month and was wrong
+  in every place that quoted it. Prose still needs a reader; whether two paragraphs *mean* the same thing is not a
+  machine question, and the header says so. Verified to fail rather than only to pass: with `0.2.1-rc.3` changed to
+  `0.2.1-rc.9` in the Chinese file alone, it exits non-zero and names the value —
+  `versions only in README.zh-CN.md: 0.2.1-rc.9`.
+
 ### Fixed
 
 - **The version requirement was written as `^0.1.5-rc.1`, which under semver means `>=0.1.5 <0.2.0` — it
