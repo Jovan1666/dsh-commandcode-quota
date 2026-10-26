@@ -378,15 +378,7 @@ node scripts/verify.mjs           # 加 --live 会额外打真实账号
 node scripts/verify.mjs --quiet   # 每个套件只打一行汇总
 ```
 
-```text
-ok    quota   (discovery contract)            27 checks
-ok    catalog (docs catalog, change detection) 86 checks
-ok    host    (route, cache, concurrency)     30 checks
-ok    client  (rendering, boundaries)         59 checks
-ok    dynamic (drift, resets, bad payloads)   39 checks
-ok    cli     (arguments, exit codes)          3 checks
-ok    audit   (credentials, host paths)
-```
+它每个套件打一行——套件名、检查数、耗时——最后给总数；任何套件失败就以非零退出。这里刻意不复制那份输出：数字会随着"每个新行为配一条新检查"不断增长，抄下来的一段在别人加检查的当下就过期了。
 
 | 脚本 | 作用 |
 |---|---|

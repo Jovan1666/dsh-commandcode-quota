@@ -48,7 +48,7 @@ dsh --version          # needs 0.1.5-rc.1 or newer; 0.2.1-rc.3 is what this was 
 npm i -g @deepseek-ai/dsh@latest
 ```
 
-The desktop client does not put `dsh` on your `PATH`; its version is in the app's own About/Settings panel, and the nightly channel currently publishes `0.2.1-rc.3`.
+The desktop client does not put `dsh` on your `PATH`; its version is in the app's own About/Settings panel, and the nightly channel currently publishes `0.2.1-rc.3`. The npm package trails it slightly (`0.2.1-rc.2` at the time of writing), so `npm i -g …@latest` and the desktop installer can legitimately show different last digits — both satisfy the requirement above.
 
 Note that the plugin's offline checks also **pass** on an older dsh — they never start dsh. So "the checks are green" does not mean it will work once installed, and the same is true of this README's prose: the numbers in it were read from the version above, not from yours. `node scripts/check.mjs` prints how many checks it actually ran.
 
@@ -194,7 +194,7 @@ The card answers *how deep am I*. **Settings → Quota & card** answers the othe
 
 Every model the plan can call, with requests per 5 hours, per week and per month — the models you configured in DSH first. Above the table sits the plan-level headline (`GOAT · $70 · ~75K requests`): a different figure on a different basis, labelled so the two are never read as one number.
 
-The figures are the vendor's, not ours. Each plan page publishes a per-model monthly budget, that model's per-token rates and the request shape the estimate assumes; the page itself computes the counts in the browser. The plugin reproduces that arithmetic and rounds exactly like the site (`Number(x.toPrecision(3))`). `tests/catalog.test.mjs` pins the outcome against the numbers the vendor's own pages render — 244 rows across four plans, zero mismatches.
+The figures are the vendor's, not ours. Each plan page publishes a per-model monthly budget, that model's per-token rates and the request shape the estimate assumes; the page itself computes the counts in the browser. The plugin reproduces that arithmetic and rounds exactly like the site (`Number(x.toPrecision(3))`). `tests/catalog.test.mjs` pins the outcome against the numbers the vendor's own pages render — every model row of all four plan pages, plus the pricing page's availability and plan-level tables — and the offline baseline stores the inputs those rows were computed from, so the arithmetic can be re-checked without the network. (This paragraph used to quote a row count. It went stale twice, so it no longer quotes one: run `node scripts/verify.mjs` and read the `catalog` suite's own numbers instead.)
 
 **It asks only when it has to.** The docs pages ignore conditional requests (the server hands out an ETag and then answers `200` to `If-None-Match` — there is no 304 branch to lean on), so the plugin does the check itself: `HEAD` for the page's ETag, 0 bytes, and only a real change downloads a body (about 200 KB, ~37 KB compressed). A check runs when you open the section and the local copy is over a day old, or when you press **Check for updates**; the sidebar card never triggers one. A baseline ships inside the plugin, so a first run — or a machine with no network — still shows figures, labelled *baseline, not synced yet*.
 
@@ -377,15 +377,7 @@ node scripts/verify.mjs           # add --live to also hit a real account
 node scripts/verify.mjs --quiet   # one summary line per suite
 ```
 
-```text
-ok    quota   (discovery contract)            27 checks
-ok    catalog (docs catalog, change detection) 86 checks
-ok    host    (route, cache, concurrency)     30 checks
-ok    client  (rendering, boundaries)         59 checks
-ok    dynamic (drift, resets, bad payloads)   39 checks
-ok    cli     (arguments, exit codes)          3 checks
-ok    audit   (credentials, host paths)
-```
+It prints one line per suite — the suite's name, its check count, and the milliseconds it took — then a total, and exits non-zero if any suite failed. The counts are deliberately not reproduced here: they grow with every behaviour that gets a check, and a copied block of them is stale the moment somebody adds one.
 
 | Script | What it does |
 |---|---|

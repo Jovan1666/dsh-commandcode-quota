@@ -26,9 +26,15 @@ All notable changes to this project are documented here.
   in a month, and writing this very entry produced a fifth stale figure on the first attempt — the number is
   **gone from the prose**. Those sentences now say what the suites cover and point at `node scripts/check.mjs`,
   which prints the count it actually ran. The same treatment was given to a catalog row count in the
-  "Per-model allowances" section: it described 244 rows and the shipped baseline now carries 526 across its plan
-  entries, so that paragraph states what `tests/catalog.test.mjs` pins instead of a figure nobody re-reads.
-  Historical figures in this file are left alone — they are a record of what was true then.
+  "Per-model allowances" section (it described 244 rows; the shipped baseline now carries 526 across its plan
+  entries), and to the pasted block of suite output in "Development", which still showed the counts from
+  several releases ago (86 / 30 / 59 where they are 96 / 47 / 69 today) and duplicated the script table right
+  below it. Historical figures in this file are left alone — they are a record of what was true then.
+- **Two of these edits landed in the Chinese README and silently not in the English one.** The row-count
+  paragraph and the npm/nightly version note were mirrored into `README.zh-CN.md` but the English file kept its
+  old text, so the two languages disagreed about the same two paragraphs. Found by re-reading both files for
+  the marker phrases instead of trusting that "the edit tool said it worked"; both are now in step, and the
+  parity is what the verification checked rather than the intent.
 
 ### Changed
 
