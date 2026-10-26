@@ -103,6 +103,7 @@ your shell.
 
 ## Requirements
 
-The plugin requires `dsh >= 0.1.5-rc.1` and the **web** profile. On an older host
-the plugin does not load, which is the intended failure — better a plugin that
-refuses than a card that renders nothing.
+The plugin requires `dsh >= 0.1.5-rc.1` and the **web** profile — verified on
+`0.2.1-rc.3`, the current desktop nightly. On an older host the plugin does not
+load, which is the intended failure — better a plugin that refuses than a card
+that renders nothing.

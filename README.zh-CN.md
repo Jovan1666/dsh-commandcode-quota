@@ -9,7 +9,7 @@
 [![Check](https://github.com/Jovan1666/dsh-commandcode-quota/actions/workflows/check.yml/badge.svg)](https://github.com/Jovan1666/dsh-commandcode-quota/actions/workflows/check.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
-[![dsh](https://img.shields.io/badge/dsh-%5E0.1.5--rc.1-blue)](#环境要求)
+[![dsh](https://img.shields.io/badge/dsh-%3E%3D0.1.5--rc.1-blue)](#环境要求)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](README.md)
 
 <img src="assets/screenshot.png" alt="侧边栏里的额度卡片：浅色导轨、浅色展开、深色展开" width="820">
@@ -34,7 +34,7 @@
 
 ## 先确认 dsh 版本
 
-**本插件要求 dsh `^0.1.5-rc.1`。** 版本不够的话启动会直接崩：
+**本插件要求 dsh `0.1.5-rc.1` 或更高——是 `>=0.1.5-rc.1`，不是 `^0.1.5-rc.1`。** 那个脱字符是个坑：按 semver，`^0.1.5` 等于 `>=0.1.5 <0.2.0`，读起来会把本插件今天正在跑的 0.2.x 整个排除掉。已核对版本：**`0.2.1-rc.3`**（当前桌面端 nightly，2026-10-26）。低于 0.1.5-rc.1 的话启动会直接崩：
 
 ```
 Error: failed to apply loader entry commandcode-quota:
@@ -44,12 +44,14 @@ Cannot read properties of undefined (reading 'register')
 因为 `ctx.connection.fetch` 这个 seam 在旧版本里不存在。查一下再装：
 
 ```sh
-dsh --version          # 需要 0.1.5-rc.1 或更高
+dsh --version          # 需要 0.1.5-rc.1 或更高；本次核对用的是 0.2.1-rc.3
 npm i -g @deepseek-ai/dsh@latest
 ```
 
-注意：插件的 244 项离线校验**跑得过**也不需要这个版本——那些校验不启动 dsh。
-所以「校验全绿」不代表装上去能用。
+桌面端不会把 `dsh` 放进 `PATH`，版本看应用自己的「关于 / 设置」面板；nightly 通道当前发布的就是 `0.2.1-rc.3`。npm 上的包会略微滞后（写这份文档时是 `0.2.1-rc.2`），所以 `npm i -g …@latest` 与桌面端安装包显示出不同的末位数字是正常的——两者都满足上面的要求。
+
+注意：插件的离线校验**跑得过**也不需要这个版本——那些校验不启动 dsh。
+所以「校验全绿」不代表装上去能用；这份 README 里的散文数字同理，它们来自上面那个版本，不是你的版本。`node scripts/check.mjs` 会打印它实际跑了多少项。
 
 ## 安装
 
@@ -99,7 +101,28 @@ New-Item -ItemType Junction -Path "$dsh\profiles\web\node_modules\dsh-commandcod
 
 ### 桌面端
 
-Electron 桌面端独占管理它自己的 profile：`dsh --profile desktop …` 会直接拒绝，报 `profile "desktop" is managed exclusively by the Electron application`。所以那边用不了 `dsh plugin`，只能手动挂。
+Electron 桌面端独占管理它自己的 profile：`dsh --profile desktop …` 会直接拒绝，报 `profile "desktop" is managed exclusively by the Electron application`。所以那边用不了 `dsh plugin`，只能手动挂。有两种挂法，**应用自己那份 profile 用的是第一种**：
+
+**写进 profile（不需要 loader 行）**：把包加进 `$dsh\profiles\desktop\package.json` —— `link:` 依赖 + 名字放进 profile 的 bundle 列表，注册交给包自带的 bundle patch：
+
+```jsonc
+{
+  "dependencies": {
+    "dsh-commandcode-quota": "link:C:/path/to/dsh-commandcode-quota"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+        "dsh-commandcode-quota"          // ← 注册就是从这里来的
+      ]
+    }
+  }
+}
+```
+
+同时保证这个目录能通过 `node_modules` 解析到——profile 要靠它解析 `link:`：
 
 ```powershell
 $dsh = if ($env:DSH_HOME) { $env:DSH_HOME } else { "$env:USERPROFILE\.dsh" }
@@ -109,7 +132,18 @@ New-Item -ItemType Junction `
   -Target "C:\path\to\dsh-commandcode-quota"
 ```
 
-然后把同样的 `insert` 块加到 `$dsh\profiles\desktop\cordis.patch.yml`，重启桌面端。
+重启桌面端。**不要同时再加 `insert` 行**——bundle 层已经注册过这个 loader id，再来一条就是上面说的 `duplicate loader entry id: commandcode-quota`。
+
+**手动挂 + loader 行**：只在包**没有**被写进 profile 的 `bundles` 列表时用。那种情况下没有人替它注册，所以这一行是必须的：
+
+```yaml
+# $dsh\profiles\desktop\cordis.patch.yml
+- insert:
+    - id: commandcode-quota
+      name: "dsh-commandcode-quota"
+```
+
+重启桌面端。如果插件没出现，先确认这一行只出现一次、上面的 junction 存在——loader 只需要这两样。
 
 > 往这个文件里加的东西**只用 ASCII**。应用会自己重写 profile：手动加的 `insert` 条目会保留，但条目上的中文注释会被重写成乱码。
 
@@ -161,7 +195,7 @@ New-Item -ItemType Junction `
 
 表里列出这个套餐能调用的每个模型，给出 5 小时 / 每周 / 每月的次数，**你自己在 DSH 里配置的模型排在最前**。表格上方是套餐级概览（`GOAT · $70 · ~75K requests`）—— 那是另一套口径算出来的另一个数，界面上分开标注，永远不会被当成同一个数字读。
 
-这些数字是官方算的，不是我们编的。每个套餐页公布三样东西：该模型在这个套餐下的月度额度、它的每 token 单价、以及估算所用的典型请求形状；页面自己在浏览器里把次数算出来。插件复刻的就是同一套算式，并按官方的方式取整（`Number(x.toPrecision(3))`）。`tests/catalog.test.mjs` 用**官方页面自己渲染出来的数字**逐行校验——四个套餐 244 行，零处不符。
+这些数字是官方算的，不是我们编的。每个套餐页公布三样东西：该模型在这个套餐下的月度额度、它的每 token 单价、以及估算所用的典型请求形状；页面自己在浏览器里把次数算出来。插件复刻的就是同一套算式，并按官方的方式取整（`Number(x.toPrecision(3))`）。`tests/catalog.test.mjs` 用**官方页面自己渲染出来的数字**逐行校验——四个套餐页的全部模型行，加上定价页的可用性与套餐级表格——而内置基线里存着这些行赖以计算的输入，所以断网也能把算式重算一遍。（这段原来写着一个行数。它已经过期两次，所以现在不写数字了：跑 `node scripts/verify.mjs`，看 `catalog` 套件自己报的数。）
 
 **只在必要时才去问。** 官方文档页忽略条件请求（服务器给了 ETag，收到 `If-None-Match` 仍回 `200`，压根没有 304 分支），所以插件自己做这件事：先发一个 `HEAD` 取该页 ETag（**0 字节**），只有真的变了才下载正文（约 200 KB，压缩后约 37 KB）。核对时机是「你打开这个设置栏目、且本地副本已超过一天」，或者你点**检查更新**；侧边栏卡片永远不会触发核对。插件里随包带了一份基线，所以第一次使用、或者机器离线时，表格照样有数字，并标注「内置基线，尚未同步」。
 
@@ -187,7 +221,7 @@ Monthly 99.8% used · $70.11 / $70.23 · $0.11 left · resets in 7d22h
 
 ## 环境要求
 
-- **DeepSeek Harness** `^0.1.5-rc.1`。插件依赖若干尚未稳定的框架内部接缝，见[兼容性](#兼容性)。
+- **DeepSeek Harness** `>=0.1.5-rc.1` —— 已在 `0.2.1-rc.3` 上核对。插件依赖若干尚未稳定的框架内部接缝，见[兼容性](#兼容性)。
 - **web** profile。卡片要通过 `connection` 服务挂进浏览器侧边栏，而这个服务只有 web 应用会装配——headless 或 CLI profile 没有地方放它。
 - 一个**有 API 权限**的 Command Code 账号（除 $1 的 **Go** 档外都包含），见[套餐与订阅](#套餐与订阅)。
 - Node.js 18+ —— 只有可选的命令行工具和开发脚本需要。
@@ -263,7 +297,7 @@ flowchart LR
 
 ## 兼容性
 
-插件依赖若干尚未成为稳定公开 API 的框架接缝，每一条都对着 `dsh 0.1.5-rc.1` 的真实实现：
+插件依赖若干尚未成为稳定公开 API 的框架接缝，每一条都对着 `dsh 0.2.1-rc.3` 的真实实现——当前桌面端 nightly，2026-10-26 重新核对过；这些接缝最初是对着 `0.1.5-rc.1` 核对的，中间没有一条改动：
 
 | 接缝 | 用途 |
 |---|---|
@@ -274,7 +308,7 @@ flowchart LR
 | `ctx.get('commands')` + `commands.register({ name, description, handler })` | 可选的 `/quota` 斜杠命令 |
 | `dsh.client` 清单 + `exports["./client"]` | 客户端 bundle 发现，服务于 `/plugins/<id>/client.js` |
 
-> **为什么用精确 Fetch 路由而不是 `connection.rpc.handle`？** `rpc.handle` 挂载通道走的是 `owner.webServer`，而 `owner` 是 Connection 服务自己的 context——那里永远没注入 `webServer`。任何其他插件调用它都会抛 `cannot get property "webServer" without inject`，调用方 inject 什么都没用。`connection.fetch.register` 只写内部路由表，任何插件 fiber 都能用，而且天然继承共享 `/api` 传输的 Host/Origin 校验与浏览器会话 Cookie。
+> **为什么用精确 Fetch 路由而不是 `connection.rpc.handle`？** `rpc.handle` 挂载通道走的是 `owner.webServer`，而 `owner` 是 Connection 服务自己的 context——那里永远没注入 `webServer`。任何其他插件调用它都会抛 `cannot get property "webServer" without inject`，调用方 inject 什么都没用。`connection.fetch.register` 只写内部路由表，任何插件 fiber 都能用，而且天然继承共享 `/api` 传输的 Host/Origin 校验与浏览器会话 Cookie。（最初是在 0.1.5-rc.1 上观察到的；0.2.1-rc.3 的 `dsh-client-connection` 里仍是同一个 `owner.webServer.register(route)` 挂载方式，所以精确路由依旧是唯一可行的做法。）
 
 未来 dsh 版本改动其中任何一条，插件会在加载时明确报错，而不是静默渲染空白。
 
@@ -338,7 +372,7 @@ key: $DSH_HOME/.credentials.yaml → refs.COMMAND_CODE_GOAT_API_KEY
 # 1. React 只有组件测试和预览页需要
 mkdir .devdeps && cd .devdeps && npm init -y && npm install react@18 react-dom@18 && cd ..
 
-# 2. 一次跑完全部 —— 244 项，一个结论，不碰网络也不读真实凭据
+# 2. 一次跑完全部 —— 一个结论，不碰网络也不读真实凭据
 node scripts/check.mjs            # 发布检查：静态检查 + 密钥扫描 + 下面全部套件
 node scripts/verify.mjs           # 加 --live 会额外打真实账号
 node scripts/verify.mjs --quiet   # 每个套件只打一行汇总

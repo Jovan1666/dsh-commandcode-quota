@@ -9,7 +9,7 @@ No browser tab, no login, no guessing how much of the plan is left.
 [![Check](https://github.com/Jovan1666/dsh-commandcode-quota/actions/workflows/check.yml/badge.svg)](https://github.com/Jovan1666/dsh-commandcode-quota/actions/workflows/check.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
-[![dsh](https://img.shields.io/badge/dsh-%5E0.1.5--rc.1-blue)](#requirements)
+[![dsh](https://img.shields.io/badge/dsh-%3E%3D0.1.5--rc.1-blue)](#requirements)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 
 <img src="assets/screenshot.png" alt="The quota card in the sidebar: light rail, light expanded, dark expanded" width="820">
@@ -34,7 +34,7 @@ Everything is read from **your own account's data** — window count, caps and p
 
 ## Check your dsh version first
 
-**This plugin needs dsh `^0.1.5-rc.1`.** On anything older it crashes at startup:
+**This plugin needs dsh `0.1.5-rc.1` or newer — `>=0.1.5-rc.1`, not `^0.1.5-rc.1`.** The caret is the trap: under semver `^0.1.5` means `>=0.1.5 <0.2.0`, so it would read as *excluding* the 0.2.x line this plugin is running on today. Verified against **`0.2.1-rc.3`** (the current desktop nightly, 2026-10-26); on anything older than 0.1.5-rc.1 it crashes at startup:
 
 ```
 Error: failed to apply loader entry commandcode-quota:
@@ -44,11 +44,13 @@ Cannot read properties of undefined (reading 'register')
 The `ctx.connection.fetch` seam it relies on does not exist in older releases. Check before you install:
 
 ```sh
-dsh --version          # needs 0.1.5-rc.1 or newer
+dsh --version          # needs 0.1.5-rc.1 or newer; 0.2.1-rc.3 is what this was verified on
 npm i -g @deepseek-ai/dsh@latest
 ```
 
-Note that the plugin's 244 offline checks also **pass** on an older dsh — they never start dsh. So "the checks are green" does not mean it will work once installed.
+The desktop client does not put `dsh` on your `PATH`; its version is in the app's own About/Settings panel, and the nightly channel currently publishes `0.2.1-rc.3`.
+
+Note that the plugin's offline checks also **pass** on an older dsh — they never start dsh. So "the checks are green" does not mean it will work once installed, and the same is true of this README's prose: the numbers in it were read from the version above, not from yours. `node scripts/check.mjs` prints how many checks it actually ran.
 
 ## Install
 
@@ -98,7 +100,28 @@ New-Item -ItemType Junction -Path "$dsh\profiles\web\node_modules\dsh-commandcod
 
 ### Desktop client
 
-The Electron desktop client owns its profile: `dsh --profile desktop …` refuses to run with `profile "desktop" is managed exclusively by the Electron application`, so the `dsh plugin` route is unavailable there and the row has to be added by hand.
+The Electron desktop client owns its profile: `dsh --profile desktop …` refuses to run with `profile "desktop" is managed exclusively by the Electron application`, so the `dsh plugin` route is unavailable there and the wiring has to be done by hand. There are two shapes, and **the app's own profile uses the first one**:
+
+**Declared in the profile (no loader row).** Add the package to `$dsh\profiles\desktop\package.json` — a `link:` dependency plus the name in the profile's bundle list — and let the package's own bundle patch register it:
+
+```jsonc
+{
+  "dependencies": {
+    "dsh-commandcode-quota": "link:C:/path/to/dsh-commandcode-quota"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+        "dsh-commandcode-quota"          // ← the registration comes from here
+      ]
+    }
+  }
+}
+```
+
+Make sure the folder reaches `node_modules` as well — the profile resolves the `link:` through it:
 
 ```powershell
 $dsh = if ($env:DSH_HOME) { $env:DSH_HOME } else { "$env:USERPROFILE\.dsh" }
@@ -108,7 +131,18 @@ New-Item -ItemType Junction `
   -Target "C:\path\to\dsh-commandcode-quota"
 ```
 
-Then add the same `insert` block to `$dsh\profiles\desktop\cordis.patch.yml` and restart the desktop app.
+Restart the desktop app. **Do not add an `insert` row as well** — the bundle layer already registers the loader id, and a second one is the `duplicate loader entry id: commandcode-quota` failure described above.
+
+**Manually, with a loader row** — only when the package is *not* in the profile's `bundles` list. Then nothing else will register it, so the row is required:
+
+```yaml
+# $dsh\profiles\desktop\cordis.patch.yml
+- insert:
+    - id: commandcode-quota
+      name: "dsh-commandcode-quota"
+```
+
+Restart the desktop app. If the plugin does not appear, check the row is there exactly once and that the junction above exists — those are the only two things the loader needs.
 
 > Keep whatever you add to that file **ASCII-only**. The app regenerates the profile on its own: an `insert` entry added by hand survives, but a non-ASCII comment on it comes back mangled.
 
@@ -186,7 +220,7 @@ It reads the same cached report the card does, so a slash invocation costs no ex
 
 ## Requirements
 
-- **DeepSeek Harness** `^0.1.5-rc.1`. The plugin uses framework seams that are not a stable public API yet; see [Compatibility](#compatibility).
+- **DeepSeek Harness** `>=0.1.5-rc.1` — verified on `0.2.1-rc.3`. The plugin uses framework seams that are not a stable public API yet; see [Compatibility](#compatibility).
 - The **web** profile. The card mounts into the browser sidebar through the `connection` service, which only the web app composes — a headless or CLI profile has nowhere to put it.
 - A **Command Code** account with API access. Every plan except the `$1` **Go** tier includes it; see [Getting a Command Code plan](#getting-a-command-code-plan).
 - Node.js 18+ — only for the optional CLI and the development scripts.
@@ -262,7 +296,7 @@ Each endpoint degrades on its own: one failure is recorded in the report's `fail
 
 ## Compatibility
 
-The plugin depends on framework seams that are not a stable public API yet. Each is pinned to what `dsh 0.1.5-rc.1` actually exposes:
+The plugin depends on framework seams that are not a stable public API yet. Each is pinned to what `dsh 0.2.1-rc.3` actually exposes — the current desktop nightly, re-checked on 2026-10-26; the same seams were first verified against `0.1.5-rc.1`, and none of them moved in between:
 
 | Seam | Used for |
 |---|---|
@@ -273,7 +307,7 @@ The plugin depends on framework seams that are not a stable public API yet. Each
 | `ctx.get('commands')` + `commands.register({ name, description, handler })` | The optional `/quota` command |
 | `dsh.client` manifest + `exports["./client"]` | Client-bundle discovery, served at `/plugins/<id>/client.js` |
 
-> **Why an exact Fetch route instead of `connection.rpc.handle`?** `rpc.handle` mounts its channel through `owner.webServer`, where `owner` is the Connection service's own context — which never injects `webServer`. Calling it from any other plugin throws `cannot get property "webServer" without inject`, whatever the caller injects. `connection.fetch.register` only writes the route table, works from any plugin fiber, and inherits the shared `/api` transport's Host/Origin fence and browser-session cookie.
+> **Why an exact Fetch route instead of `connection.rpc.handle`?** `rpc.handle` mounts its channel through `owner.webServer`, where `owner` is the Connection service's own context — which never injects `webServer`. Calling it from any other plugin throws `cannot get property "webServer" without inject`, whatever the caller injects. `connection.fetch.register` only writes the route table, works from any plugin fiber, and inherits the shared `/api` transport's Host/Origin fence and browser-session cookie. (First observed on 0.1.5-rc.1; the same `owner.webServer.register(route)` mount is still in `dsh-client-connection` on 0.2.1-rc.3, so the exact route is still the only one that works.)
 
 If a future dsh release changes one of these, the plugin fails loudly at load rather than silently rendering nothing.
 
@@ -337,7 +371,7 @@ The CLI's human-readable output is Chinese; `--json` is language-neutral and is 
 # 1. React is needed only by the component test and the preview page
 mkdir .devdeps && cd .devdeps && npm init -y && npm install react@18 react-dom@18 && cd ..
 
-# 2. Everything at once — 244 checks, one verdict, no network, no real credentials
+# 2. Everything at once — one verdict, no network, no real credentials
 node scripts/check.mjs            # release check: static + secret scan + every suite below
 node scripts/verify.mjs           # add --live to also hit a real account
 node scripts/verify.mjs --quiet   # one summary line per suite

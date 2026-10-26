@@ -2,6 +2,51 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] — 2026-10-26
+
+### Fixed
+
+- **The version requirement was written as `^0.1.5-rc.1`, which under semver means `>=0.1.5 <0.2.0` — it
+  excluded the 0.2.x line the plugin is actually running on.** The README badge, the "check your dsh version
+  first" section, the requirements list and `SECURITY.md` all carried that caret. They now say
+  `>=0.1.5-rc.1`, and the requirement is stated together with the version it was verified against:
+  **`0.2.1-rc.3`**, the current desktop nightly (published 2026-10-23; the machine this was checked on runs it,
+  with an identical installer in the updater's `pending/` folder). A reader on 0.2.x could previously have
+  concluded the plugin did not support their host.
+- **The desktop install instructions told users to add a loader row that the bundle already registers.** The
+  "Desktop client" section said: make the junction, *then add the same `insert` block* to
+  `profiles/desktop/cordis.patch.yml`. On the client's own profile that row is not there and is not needed —
+  the plugin is declared in `profiles/desktop/package.json` (`link:` dependency plus the name in
+  `dsh.profile.bundles`), and the package's bundle patch does the registration. Following the old advice as
+  written produces the failure the same README warns about two screens earlier:
+  `duplicate loader entry id: commandcode-quota`. Both shapes are now documented, marked as mutually exclusive,
+  with the bundle route first because that is the one the app's profile uses.
+- **The offline check count was quoted in prose in four places, and it was stale in all of them.** It said 244;
+  the suite runs 289. Rather than write 289 and wait for it to rot again — it had already gone 244 → 280 → 289
+  in a month, and writing this very entry produced a fifth stale figure on the first attempt — the number is
+  **gone from the prose**. Those sentences now say what the suites cover and point at `node scripts/check.mjs`,
+  which prints the count it actually ran. The same treatment was given to a catalog row count in the
+  "Per-model allowances" section: it described 244 rows and the shipped baseline now carries 526 across its plan
+  entries, so that paragraph states what `tests/catalog.test.mjs` pins instead of a figure nobody re-reads.
+  Historical figures in this file are left alone — they are a record of what was true then.
+
+### Changed
+
+- **The compatibility notes are re-attributed to `0.2.1-rc.3`.** The seams table, the `connection.rpc.handle`
+  explanation and the host-half module comment were pinned to `0.1.5-rc.1`. All of them were re-checked against
+  the installed 0.2.1-rc.3: the same `owner.webServer.register(route)` mount is still in
+  `dsh-client-connection`, so the exact Fetch route is still the only one that works, and none of the six seams
+  moved. The history is kept in the sentence rather than replaced, because "verified then, re-verified now" is
+  the useful form of that claim.
+
+### Tests
+
+- Unchanged: green on Node 18.20.4 and Node 24.13.0, and `node scripts/check.mjs` reports the count (289 at the
+  time of writing — see the note above about why that number is not repeated here). Nothing in this entry is
+  covered by a test: a README's version strings and install steps are prose, which is exactly why they drifted.
+  What *is* checked is the plugin's behaviour on the version they describe — the card, the switch and the
+  catalog were exercised against the installed `0.2.1-rc.3` while writing it.
+
 ## [Unreleased] — 2026-10-21
 
 ### Fixed

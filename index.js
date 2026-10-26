@@ -11,10 +11,12 @@
  * `handle` mounts the channel with `owner.webServer`, whose resolution walks
  * the Connection plugin's own fiber chain — where `webServer` is never in scope
  * — so it throws `cannot get property "webServer" without inject` for every
- * caller outside that package, no matter what the caller injects (dsh
- * 0.1.5-rc.1). An exact route is served by the same `/api` transport as the rest
- * of the GUI, so it inherits the Host/Origin fence and the browser-session
- * cookie: only a same-origin browser holding this process's cookie reaches it.
+ * caller outside that package, no matter what the caller injects (first seen on
+ * dsh 0.1.5-rc.1, and the same `owner.webServer.register(route)` mount is still
+ * there on 0.2.1-rc.3). An exact route is served by the same `/api` transport as
+ * the rest of the GUI, so it inherits the Host/Origin fence and the
+ * browser-session cookie: only a same-origin browser holding this process's
+ * cookie reaches it.
  *
  * @module dsh-cc-quota
  */
